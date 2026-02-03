@@ -24,11 +24,63 @@ Use this skill when:
 - **Python Environment**: With `pandas`, `numpy` for analysis
 - **File System Access**: For caching and storing reports (optional)
 
+## MCP Configuration
+
+The Numerai MCP server is configured in `~/.claude/mcp.json`:
+
+```json
+{
+  "servers": {
+    "numerai": {
+      "transport": "sse",
+      "url": "https://api-tournament.numer.ai/mcp/sse",
+      "headers": {
+        "Authorization": "Token ${NUMERAI_MCP_AUTH}"
+      }
+    }
+  }
+}
+```
+
+**Required Environment Variable**: `NUMERAI_MCP_AUTH` must be set to your Numerai API token.
+
+**Python Wrapper**: For programmatic access, use the `NumeraiMCP` class from `numerai_2026_pipeline/numerai_mcp.py`:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()  # Reads NUMERAI_MCP_AUTH from environment
+performance = client.get_model_performance("my_model")
+```
+
 ## Workflow
+
+### 0) Verify MCP Configuration
+
+Before starting, verify MCP access is properly configured:
+
+```python
+import os
+
+# Check environment variable is set
+assert os.environ.get("NUMERAI_MCP_AUTH"), (
+    "NUMERAI_MCP_AUTH environment variable not set. "
+    "Export your Numerai API token: export NUMERAI_MCP_AUTH='your-token'"
+)
+
+# Test MCP connection (optional - via Python wrapper)
+from numerai_mcp import NumeraiMCP, NumeraiMCPAuthError
+
+try:
+    client = NumeraiMCP()
+    print("MCP client initialized successfully")
+except NumeraiMCPAuthError as e:
+    print(f"MCP authentication failed: {e}")
+```
 
 ### 1) Fetch Model Performance Data (MCP Required)
 
-Query performance metrics for your models:
+Query performance metrics for your models. Send GraphQL queries to the MCP endpoint at `https://api-tournament.numer.ai/mcp/sse`:
 
 ```graphql
 query {
@@ -54,6 +106,22 @@ query {
     }
   }
 }
+```
+
+**Via Python wrapper**:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()
+performance = client.get_model_performance("my_model_name")
+
+# performance contains:
+# - corr: Correlation scores by round
+# - mmc: MMC scores by round
+# - fnc: Feature-neutral correlation scores
+# - rank: Tournament rankings
+# - payout: Payout history
 ```
 
 ### 2) Extract Key Metrics

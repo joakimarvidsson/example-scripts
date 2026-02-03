@@ -24,11 +24,63 @@ Use this skill when:
 - **Live Data**: Current round's live features
 - **Python Environment**: With `numerapi`, `pandas`, and model dependencies
 
+## MCP Configuration
+
+The Numerai MCP server is configured in `~/.claude/mcp.json`:
+
+```json
+{
+  "servers": {
+    "numerai": {
+      "transport": "sse",
+      "url": "https://api-tournament.numer.ai/mcp/sse",
+      "headers": {
+        "Authorization": "Token ${NUMERAI_MCP_AUTH}"
+      }
+    }
+  }
+}
+```
+
+**Required Environment Variable**: `NUMERAI_MCP_AUTH` must be set to your Numerai API token.
+
+**Python Wrapper**: For programmatic access, use the `NumeraiMCP` class from `numerai_2026_pipeline/numerai_mcp.py`:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()  # Reads NUMERAI_MCP_AUTH from environment
+success = client.submit_predictions("my_model", predictions_dict)
+```
+
 ## Workflow
+
+### 0) Verify MCP Configuration
+
+Before starting, verify MCP access is properly configured:
+
+```python
+import os
+
+# Check environment variable is set
+assert os.environ.get("NUMERAI_MCP_AUTH"), (
+    "NUMERAI_MCP_AUTH environment variable not set. "
+    "Export your Numerai API token: export NUMERAI_MCP_AUTH='your-token'"
+)
+
+# Test MCP connection (optional - via Python wrapper)
+from numerai_mcp import NumeraiMCP, NumeraiMCPAuthError
+
+try:
+    client = NumeraiMCP()
+    print("MCP client initialized successfully")
+except NumeraiMCPAuthError as e:
+    print(f"MCP authentication failed: {e}")
+```
 
 ### 1) Check Round Status (MCP Required)
 
-First, verify a round is open for submissions:
+First, verify a round is open for submissions. Send GraphQL queries to the MCP endpoint at `https://api-tournament.numer.ai/mcp/sse`:
 
 ```graphql
 query {
@@ -57,6 +109,17 @@ query {
     }
   }
 }
+```
+
+**Via Python wrapper**:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()
+round_num = client.get_current_round()
+round_details = client.get_round_details(round_num)
+print(f"Round {round_num} - Closes: {round_details['close_time']}")
 ```
 
 ### 2) Load Live Data
@@ -212,7 +275,7 @@ print(f"Submitted! Submission ID: {submission_id}")
 
 ### 9) Submit via MCP (Alternative)
 
-For automated pipelines using MCP:
+For automated pipelines using MCP, send mutations to the MCP endpoint at `https://api-tournament.numer.ai/mcp/sse`:
 
 ```graphql
 mutation {
@@ -224,6 +287,21 @@ mutation {
     insertedAt
   }
 }
+```
+
+**Via Python wrapper**:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()
+
+# predictions_dict is a dict mapping stock IDs to prediction values
+predictions_dict = {"stock_1": 0.52, "stock_2": 0.48, ...}
+success = client.submit_predictions("my_model_name", predictions_dict)
+
+if success:
+    print("Submission successful!")
 ```
 
 ### 10) Verify Submission Status

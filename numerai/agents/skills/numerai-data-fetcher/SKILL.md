@@ -25,11 +25,63 @@ Use this skill when:
 - **Network Access**: For downloading parquet files from Numerai
 - **Python Environment**: With `numerapi`, `pandas`, and `pyarrow` installed
 
+## MCP Configuration
+
+The Numerai MCP server is configured in `~/.claude/mcp.json`:
+
+```json
+{
+  "servers": {
+    "numerai": {
+      "transport": "sse",
+      "url": "https://api-tournament.numer.ai/mcp/sse",
+      "headers": {
+        "Authorization": "Token ${NUMERAI_MCP_AUTH}"
+      }
+    }
+  }
+}
+```
+
+**Required Environment Variable**: `NUMERAI_MCP_AUTH` must be set to your Numerai API token.
+
+**Python Wrapper**: For programmatic access, use the `NumeraiMCP` class from `numerai_2026_pipeline/numerai_mcp.py`:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()  # Reads NUMERAI_MCP_AUTH from environment
+round_num = client.get_current_round()
+```
+
 ## Workflow
+
+### 0) Verify MCP Configuration
+
+Before starting, verify MCP access is properly configured:
+
+```python
+import os
+
+# Check environment variable is set
+assert os.environ.get("NUMERAI_MCP_AUTH"), (
+    "NUMERAI_MCP_AUTH environment variable not set. "
+    "Export your Numerai API token: export NUMERAI_MCP_AUTH='your-token'"
+)
+
+# Test MCP connection (optional - via Python wrapper)
+from numerai_mcp import NumeraiMCP, NumeraiMCPAuthError
+
+try:
+    client = NumeraiMCP()
+    print("MCP client initialized successfully")
+except NumeraiMCPAuthError as e:
+    print(f"MCP authentication failed: {e}")
+```
 
 ### 1) Check Current Round Status (MCP Required)
 
-Query the current round to understand what data is available:
+Query the current round to understand what data is available. Send GraphQL queries to the MCP endpoint at `https://api-tournament.numer.ai/mcp/sse`:
 
 ```graphql
 query {
@@ -48,6 +100,16 @@ Also check available data versions:
 query {
   listDatasets
 }
+```
+
+**Via Python wrapper**:
+
+```python
+from numerai_mcp import NumeraiMCP
+
+client = NumeraiMCP()
+round_details = client.get_round_details(client.get_current_round())
+print(f"Round {round_details['round_num']} - Status: {round_details['status']}")
 ```
 
 ### 2) Determine Data Requirements
