@@ -34,18 +34,27 @@ def main():
     hpo_parser.add_argument("--hpo-max-era", type=int, default=800)
     hpo_parser.add_argument("--wandb-project", default=None)
     hpo_parser.add_argument("--study-name", default=None)
+    hpo_parser.add_argument("--model-type", default="LGBMRegressor",
+                            choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                            help="Model type to optimize")
 
     # Neutralization phase
     neut_parser = subparsers.add_parser("neutralization", help="Run neutralization tuning")
     neut_parser.add_argument("--best-params-file", type=Path, required=True)
     neut_parser.add_argument("--n-estimators", type=int, default=2000)
     neut_parser.add_argument("--strengths", type=str, default="0,0.25,0.5,0.75,1.0")
+    neut_parser.add_argument("--model-type", default="LGBMRegressor",
+                            choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                            help="Model type to use")
 
     # Holdout phase
     holdout_parser = subparsers.add_parser("holdout", help="Run holdout evaluation (FINAL)")
     holdout_parser.add_argument("--best-params-file", type=Path, required=True)
     holdout_parser.add_argument("--neutralization-strength", type=float, required=True)
     holdout_parser.add_argument("--n-estimators", type=int, default=2000)
+    holdout_parser.add_argument("--model-type", default="LGBMRegressor",
+                            choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                            help="Model type to use")
 
     args = parser.parse_args()
 
@@ -61,6 +70,7 @@ def main():
             hpo_max_era=args.hpo_max_era,
             wandb_project=args.wandb_project,
             study_name=args.study_name,
+            model_type=args.model_type,
             # Use standard paths
             downsampled_path="v5.2/downsampled_full.parquet",
             benchmark_path="v5.2/downsampled_full_benchmark_models.parquet",
@@ -79,6 +89,7 @@ def main():
 
         results = evaluate_on_neutralization(
             best_params,
+            model_type=args.model_type,
             n_estimators=args.n_estimators,
             neutralization_strengths=strengths,
             downsampled_path="v5.2/downsampled_full.parquet",
@@ -103,6 +114,7 @@ def main():
         results = evaluate_on_holdout(
             best_params,
             args.neutralization_strength,
+            model_type=args.model_type,
             n_estimators=args.n_estimators,
             full_path="v5.2/full.parquet",
             benchmark_path="v5.2/full_benchmark_models.parquet",
