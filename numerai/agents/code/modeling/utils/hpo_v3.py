@@ -51,6 +51,15 @@ SEARCH_SPACES_V3 = {
         "reg_lambda": ("log_float", 1e-6, 10.0),
         "gamma": ("log_float", 1e-6, 1.0),
     },
+    "CatBoostRegressor": {
+        "learning_rate": ("log_float", 0.005, 0.1),
+        "depth": ("int", 4, 10),
+        "l2_leaf_reg": ("log_float", 1e-2, 10.0),
+        "subsample": ("float", 0.6, 1.0),
+        "colsample_bylevel": ("float", 0.3, 1.0),
+        "min_data_in_leaf": ("int", 1, 100),
+        "random_strength": ("log_float", 1e-3, 10.0),
+    },
 }
 
 
@@ -220,7 +229,13 @@ def create_hpo_objective(
         # Sample hyperparameters
         sampled_params = sample_params(trial, model_type, search_space)
         model_params = {**sampled_params, **fixed}
-        model_params["n_estimators"] = n_estimators
+
+        # CatBoost uses 'iterations' instead of 'n_estimators'
+        if model_type == "CatBoostRegressor":
+            model_params["iterations"] = n_estimators
+            model_params.setdefault("verbose", 0)
+        else:
+            model_params["n_estimators"] = n_estimators
 
         # Add standard params
         if model_type == "LGBMRegressor":
@@ -568,7 +583,11 @@ def evaluate_on_neutralization(
 
     # Build model params
     model_params = {**best_params}
-    model_params["n_estimators"] = n_estimators
+    if model_type == "CatBoostRegressor":
+        model_params["iterations"] = n_estimators
+        model_params.setdefault("verbose", 0)
+    else:
+        model_params["n_estimators"] = n_estimators
     if model_type == "LGBMRegressor":
         model_params.setdefault("n_jobs", -1)
         model_params.setdefault("random_state", 1337)
@@ -724,7 +743,11 @@ def evaluate_on_holdout(
 
     # Build model params
     model_params = {**best_params}
-    model_params["n_estimators"] = n_estimators
+    if model_type == "CatBoostRegressor":
+        model_params["iterations"] = n_estimators
+        model_params.setdefault("verbose", 0)
+    else:
+        model_params["n_estimators"] = n_estimators
     if model_type == "LGBMRegressor":
         model_params.setdefault("n_jobs", -1)
         model_params.setdefault("random_state", 1337)

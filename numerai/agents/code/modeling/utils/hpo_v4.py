@@ -340,7 +340,11 @@ def run_neutralization_tuning(
     # Build and train model
     x_cols = features + benchmark_cols
     model_params = {**best_params}
-    model_params["n_estimators"] = n_estimators
+    if model_type == "CatBoostRegressor":
+        model_params["iterations"] = n_estimators
+        model_params.setdefault("verbose", 0)
+    else:
+        model_params["n_estimators"] = n_estimators
     if model_type == "LGBMRegressor":
         model_params.setdefault("n_jobs", -1)
         model_params.setdefault("random_state", 1337)
@@ -675,7 +679,11 @@ def train_ensemble_models(
 
     # Build model params
     model_params = {**best_params}
-    model_params["n_estimators"] = n_estimators
+    if model_type == "CatBoostRegressor":
+        model_params["iterations"] = n_estimators
+        model_params.setdefault("verbose", 0)
+    else:
+        model_params["n_estimators"] = n_estimators
     if model_type == "LGBMRegressor":
         model_params.setdefault("n_jobs", -1)
         model_params.setdefault("verbose", -1)
