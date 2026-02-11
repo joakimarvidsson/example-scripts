@@ -22,7 +22,7 @@ CONFIG = {
             "early_stopping": True,
             "patience": 10,
             "validation_fraction": 0.1,
-            "validation_split_mode": "era",
+            "early_stopping_mode": "era",
             "scale": True,
             "random_state": 1337,
         },
