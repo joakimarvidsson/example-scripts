@@ -37,12 +37,18 @@ def main():
     ensemble_parser.add_argument("--full-model-subsample", type=float, default=0.25,
                                 help="Subsample fraction for full model (0 to skip, 0.25 default)")
     ensemble_parser.add_argument("--output-dir", type=Path, default=Path("numerai/agents/baselines/models"))
+    ensemble_parser.add_argument("--model-type", default="LGBMRegressor",
+                                choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                                help="Model type to train")
 
     # Holdout evaluation
     holdout_parser = subparsers.add_parser("holdout", help="Run holdout evaluation (FINAL)")
     holdout_parser.add_argument("--best-params-file", type=Path, required=True)
     holdout_parser.add_argument("--neut-config-file", type=Path, required=True)
     holdout_parser.add_argument("--ensemble-dir", type=Path, default=Path("numerai/agents/baselines/models"))
+    holdout_parser.add_argument("--model-type", default="LGBMRegressor",
+                                choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                                help="Model type to use")
 
     # Full pipeline (ensemble + holdout)
     full_parser = subparsers.add_parser("full", help="Run ensemble training + holdout evaluation")
@@ -54,6 +60,9 @@ def main():
     full_parser.add_argument("--full-model-subsample", type=float, default=0.25,
                             help="Subsample fraction for full model (0 to skip, 0.25 default)")
     full_parser.add_argument("--output-dir", type=Path, default=Path("numerai/agents/baselines"))
+    full_parser.add_argument("--model-type", default="LGBMRegressor",
+                            choices=["LGBMRegressor", "XGBRegressor", "CatBoostRegressor"],
+                            help="Model type to train")
 
     args = parser.parse_args()
     data_dir = str(args.data_dir)
@@ -69,6 +78,7 @@ def main():
         # Use memory-efficient mode with full data
         models = train_ensemble_models(
             best_params,
+            model_type=args.model_type,
             n_estimators=args.n_estimators,
             n_offsets=args.n_offsets,
             data_dir=data_dir,
@@ -114,6 +124,7 @@ def main():
             print("Training ensemble models...")
             models = train_ensemble_models(
                 best_params,
+                model_type=args.model_type,
                 n_estimators=2000,
                 data_dir=data_dir,
                 memory_efficient=True,
@@ -123,6 +134,7 @@ def main():
         results = evaluate_on_holdout_v4(
             models,
             neut_config,
+            model_type=args.model_type,
             data_dir=data_dir,
             memory_efficient=True,
         )
@@ -158,6 +170,7 @@ def main():
         models_dir = output_dir / "models"
         models = train_ensemble_models(
             best_params,
+            model_type=args.model_type,
             n_estimators=args.n_estimators,
             data_dir=data_dir,
             memory_efficient=True,
@@ -184,6 +197,7 @@ def main():
         holdout_results = evaluate_on_holdout_v4(
             models,
             neut_config,
+            model_type=args.model_type,
             data_dir=data_dir,
             memory_efficient=True,
         )
