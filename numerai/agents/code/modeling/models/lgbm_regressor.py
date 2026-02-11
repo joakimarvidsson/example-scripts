@@ -55,4 +55,7 @@ class LGBMRegressor:
         return X[feature_cols]
 
     def __getattr__(self, name: str):
+        # Guard against recursion during unpickling
+        if "_model" not in self.__dict__:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         return getattr(self._model, name)

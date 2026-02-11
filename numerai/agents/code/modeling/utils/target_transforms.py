@@ -60,6 +60,35 @@ def apply_target_transform(
             scale=scale,
         )
 
+    if transform_type in {
+        "subtract_benchmark_invnorm",
+        "subtract_benchmark_inverse_normal",
+    }:
+        benchmark_col = transform.get("benchmark_col")
+        if not benchmark_col:
+            raise ValueError(
+                "model.target_transform.benchmark_col is required for subtract_benchmark_invnorm."
+            )
+        era_col = transform.get("era_col", "era")
+        scale = float(transform.get("scale", 0.008))
+        per_era = bool(transform.get("per_era", True))
+        use_rank = bool(transform.get("use_rank", False))
+        clip_eps = float(transform.get("clip_eps", 1e-6))
+        center = bool(transform.get("center", True))
+        center_per_era = bool(transform.get("center_per_era", False))
+        return subtract_scaled_invnorm_column(
+            y,
+            X,
+            benchmark_col=benchmark_col,
+            era_col=era_col,
+            scale=scale,
+            per_era=per_era,
+            use_rank=use_rank,
+            clip_eps=clip_eps,
+            center=center,
+            center_per_era=center_per_era,
+        )
+
     raise ValueError(f"Unknown target_transform type: {transform_type}")
 
 
@@ -125,6 +154,51 @@ def subtract_scaled_zscore_column(
     return pd.Series(transformed, index=y.index, name=y.name)
 
 
+def subtract_scaled_invnorm_column(
+    y: pd.Series,
+    X: pd.DataFrame,
+    *,
+    benchmark_col: str,
+    era_col: str = "era",
+    scale: float = 0.008,
+    per_era: bool = True,
+    use_rank: bool = False,
+    clip_eps: float = 1e-6,
+    center: bool = True,
+    center_per_era: bool = False,
+) -> pd.Series:
+    if benchmark_col not in X.columns:
+        raise ValueError(
+            f"Benchmark column '{benchmark_col}' not found in X. "
+            "Ensure model.x_groups includes 'benchmark_models' (and the benchmark file contains that column)."
+        )
+    if per_era and era_col not in X.columns:
+        raise ValueError(
+            f"Era column '{era_col}' not found in X. Ensure model.x_groups includes 'era'."
+        )
+    if not np.isfinite(scale):
+        raise ValueError("scale must be finite.")
+    if not (0.0 < clip_eps < 0.5):
+        raise ValueError("clip_eps must be in (0, 0.5).")
+
+    benchmark = X[benchmark_col]
+    eras = X[era_col] if per_era else None
+    gaussian_benchmark = _inverse_normal(
+        benchmark, groups=eras, use_rank=use_rank, clip_eps=clip_eps
+    )
+
+    y_values = pd.to_numeric(y, errors="coerce").to_numpy(dtype="float64", copy=False)
+    b_values = pd.to_numeric(gaussian_benchmark, errors="coerce").to_numpy(
+        dtype="float64", copy=False
+    )
+    transformed = y_values - float(scale) * b_values
+    transformed_series = pd.Series(transformed, index=y.index, name=y.name)
+
+    if not center:
+        return transformed_series
+    return _center_series(transformed_series, groups=eras if center_per_era else None)
+
+
 def _zscore(
     x: pd.Series,
     *,
@@ -139,6 +213,31 @@ def _zscore(
     group_codes, _ = pd.factorize(groups, sort=False)
     z = _zscore_groupwise(x_values, group_codes)
     return pd.Series(z, index=x.index, name=x.name)
+
+
+def _inverse_normal(
+    x: pd.Series,
+    *,
+    groups: pd.Series | None,
+    use_rank: bool,
+    clip_eps: float,
+) -> pd.Series:
+    from scipy.stats import norm
+
+    x_num = pd.to_numeric(x, errors="coerce")
+    if use_rank:
+        if groups is None:
+            u = x_num.rank(method="average", pct=True)
+        else:
+            u = x_num.groupby(groups, sort=False).rank(method="average", pct=True)
+    else:
+        u = x_num
+
+    u = u.clip(lower=clip_eps, upper=1.0 - clip_eps)
+    inv = pd.Series(norm.ppf(u.to_numpy(dtype="float64", copy=False)), index=x.index)
+    inv = inv.where(np.isfinite(x_num.to_numpy(dtype="float64", copy=False)))
+    inv.name = x.name
+    return inv
 
 
 def _zscore_global(x: np.ndarray) -> np.ndarray:
@@ -210,6 +309,18 @@ def _linear_residual(
         y_values, x_values, group_codes, fit_intercept=fit_intercept
     )
     return pd.Series(resid, index=y.index, name=y.name)
+
+
+def _center_series(values: pd.Series, *, groups: pd.Series | None) -> pd.Series:
+    if groups is None:
+        mean_value = float(np.nanmean(pd.to_numeric(values, errors="coerce")))
+        if np.isfinite(mean_value):
+            return values - mean_value
+        return values
+
+    centered = values.astype("float64").copy()
+    centered = centered - centered.groupby(groups, sort=False).transform("mean")
+    return centered
 
 
 def _linear_residual_global(
@@ -295,6 +406,14 @@ class TargetTransformWrapper:
                 "TargetTransformWrapper requires pandas inputs (X DataFrame, y Series)."
             )
         y_transformed = apply_target_transform(y, X, self._target_transform)
+        if isinstance(self._target_transform, dict):
+            drop_na = bool(self._target_transform.get("drop_na", False))
+        else:
+            drop_na = False
+        if drop_na:
+            mask = pd.to_numeric(y_transformed, errors="coerce").notna()
+            X = X.loc[mask]
+            y_transformed = y_transformed.loc[mask]
         self._model.fit(X, y_transformed, **kwargs)
         return self
 

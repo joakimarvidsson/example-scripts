@@ -20,10 +20,14 @@ def build_model(
     elif model_type == "CatBoostRegressor":
         from agents.code.modeling.models.catboost_regressor import CatBoostRegressor
         model = CatBoostRegressor(feature_cols=feature_cols, **model_params)
+    elif model_type == "TorchMLPRegressor":
+        from agents.code.modeling.models.torch_mlp_regressor import TorchMLPRegressor
+
+        model = TorchMLPRegressor(feature_cols=feature_cols, **model_params)
     else:
         raise ValueError(
             "Unsupported model type: "
-            f"{model_type}. Supported types: LGBMRegressor, MLPRegressor, XGBRegressor, CatBoostRegressor"
+            f"{model_type}. Supported types: LGBMRegressor, MLPRegressor, XGBRegressor, CatBoostRegressor, TorchMLPRegressor"
         )
 
     target_transform = model_config.get("target_transform")
