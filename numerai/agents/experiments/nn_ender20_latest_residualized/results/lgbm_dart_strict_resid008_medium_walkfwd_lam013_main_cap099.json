@@ -1,0 +1,35 @@
+{
+  "data": {
+    "data_version": "v5.2",
+    "feature_set": "medium",
+    "target": "target",
+    "oof_rows": 968531,
+    "oof_eras": 156
+  },
+  "benchmark": {
+    "model": "v52_lgbm_ender20",
+    "file": "numerai/v5.2/full_benchmark_models.parquet"
+  },
+  "model": {
+    "type": "lgbm_dart_strict_resid008_medium_walkfwd_lambda_blend"
+  },
+  "output": {
+    "predictions_file": "/Users/joakim/Documents/Projects/Numerai/example-scripts/numerai/agents/experiments/nn_ender20_latest_residualized/predictions/lgbm_dart_strict_resid008_medium_walkfwd_lam013_main_cap099.parquet"
+  },
+  "metrics": {
+    "corr": {
+      "mean": 0.03268828541593617,
+      "std": 0.017175399000547674
+    },
+    "bmc": {
+      "mean": 0.0011110869455751287,
+      "std": 0.0031326637667285833,
+      "avg_corr_with_benchmark": 0.9264941805420108
+    },
+    "bmc_last_200_eras": {
+      "mean": 0.0011110869455751287,
+      "std": 0.0031326637667285833,
+      "avg_corr_with_benchmark": 0.9264941805420108
+    }
+  }
+}

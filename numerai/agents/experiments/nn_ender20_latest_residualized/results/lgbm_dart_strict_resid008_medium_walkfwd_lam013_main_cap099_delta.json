@@ -1,0 +1,13 @@
+{
+  "model": "lgbm_dart_strict_resid008_medium_walkfwd_lam013_main_cap099",
+  "metrics": {
+    "corr_mean": 0.03268828541593617,
+    "bmc_mean": 0.0011110869455751287,
+    "payout_mean": 0.026584069456581566,
+    "delta_mean": 5.456789541372256e-05,
+    "delta_cumsum_end": 0.008512591684540733,
+    "delta_cumsum_min": -0.041256945772431435,
+    "max_corr_cap_metric": 0.9896435494665359,
+    "lambda": 0.13
+  }
+}
