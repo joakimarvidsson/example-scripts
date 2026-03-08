@@ -192,6 +192,21 @@ def parse_args() -> argparse.Namespace:
             "(predictions/<spec_name>_raw_walkfwd.parquet)."
         ),
     )
+    parser.add_argument(
+        "--best-out-name",
+        default="xgb_strict_best_ender20_walkfwd",
+        help="Output stem for the selected best strict model.",
+    )
+    parser.add_argument(
+        "--blend-out-name",
+        default="blend_xgb_strict_best_ender20_walkfwd_with_mlp",
+        help="Output stem for the best GBT+MLP blend artifact.",
+    )
+    parser.add_argument(
+        "--summary-name",
+        default="gbt_strict_walkforward_summary.json",
+        help="Filename for the run summary JSON under results/.",
+    )
     return parser.parse_args()
 
 
@@ -510,7 +525,7 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
             },
         ),
     ]
-    common = {
+    xgb_common = {
         "objective": "reg:squarederror",
         "tree_method": "hist",
         "n_jobs": -1,
@@ -527,6 +542,16 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         model_family: str = "xgb",
     ) -> None:
         nonlocal idx
+        seed_value = seed + idx
+        merged_params = dict(params)
+        if model_family == "xgb":
+            merged_params = {**xgb_common, **merged_params, "random_state": seed_value}
+        elif model_family == "lgbm":
+            merged_params = {**merged_params, "random_state": seed_value}
+        elif model_family == "catboost":
+            merged_params = {**merged_params, "random_seed": seed_value}
+        else:
+            merged_params = {**merged_params, "random_state": seed_value}
         specs.append(
             ModelSpec(
                 name=name,
@@ -534,7 +559,7 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
                 feature_set=feature_set,
                 offset=offset,
                 residual_scale=residual_scale,
-                params={**common, **params, "random_state": seed + idx},
+                params=merged_params,
             )
         )
         idx += 1
@@ -1430,7 +1455,7 @@ def main() -> None:
     best_df = next(df for name, df, _ in strict_candidates if name == best_name)
     best_metrics = next(m for name, _, m in strict_candidates if name == best_name)
 
-    best_out_name = "xgb_strict_best_ender20_walkfwd"
+    best_out_name = args.best_out_name
     best_out_path = predictions_dir / f"{best_out_name}.parquet"
     best_df.rename(columns={args.benchmark_model: "benchmark_prediction"}).to_parquet(
         best_out_path, index=False
@@ -1470,7 +1495,7 @@ def main() -> None:
                 benchmark_col=args.benchmark_model,
                 early_era_max=args.early_era_max,
             )
-            blend_name = "blend_xgb_strict_best_ender20_walkfwd_with_mlp"
+            blend_name = args.blend_out_name
             blend_path = predictions_dir / f"{blend_name}.parquet"
             blend_df.rename(columns={args.benchmark_model: "benchmark_prediction"}).to_parquet(
                 blend_path, index=False
@@ -1496,7 +1521,7 @@ def main() -> None:
         else:
             print(f"\nSkipped MLP blend: missing {mlp_path}")
 
-    summary_path = results_dir / "gbt_strict_walkforward_summary.json"
+    summary_path = results_dir / args.summary_name
     _write_result_json(
         summary_path,
         {
