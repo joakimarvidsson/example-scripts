@@ -32,6 +32,18 @@ Model: `cat_strict_resid008_medfaith64_walkfwd`
   - `payout_mean = 0.0251358`
   - verdict: survives dense evaluation, but only marginally
 
+Model: `cat_strict_resid010_smallfaith64_walkfwd`
+
+- dense raw cache completed:
+  - `cat_strict_resid010_smallfaith64_walkfwd_raw_walkfwd_dense_e4_r700.parquet`
+- dense strict scoring completed:
+  - `cat_strict_resid010_smallfaith64_walkfwd_strict_dense_e4_r700`
+  - `delta_mean = 0.0000219`
+  - `delta_cumsum_end = 0.0034174`
+  - `bmc_mean = 0.0002735`
+  - `payout_mean = 0.0249306`
+  - verdict: survives dense evaluation, but is slightly worse than the medfaith64 dense incumbent on delta, BMC, and payout
+
 ## Dense tree + MLP blend check
 
 Dense tree winner:
@@ -65,6 +77,7 @@ Interpretation:
 ## Decision
 
 - Reject the dense LightGBM candidate.
-- Keep the dense CatBoost candidate as the current surviving dense tree.
+- Keep `cat_strict_resid008_medfaith64_walkfwd` as the current surviving dense tree.
+- Reject `cat_strict_resid010_smallfaith64_walkfwd` as a replacement candidate.
 - If deploying a tree+MLP blend from this round, prefer the `95/5` CatBoost + `roundM6_base_w80_m3_w20` blend.
 - Continue searching for a stronger dense additive tree before treating this as a final winner.
