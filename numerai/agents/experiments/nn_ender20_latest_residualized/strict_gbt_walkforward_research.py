@@ -207,6 +207,14 @@ def parse_args() -> argparse.Namespace:
         default="gbt_strict_walkforward_summary.json",
         help="Filename for the run summary JSON under results/.",
     )
+    parser.add_argument(
+        "--artifact-suffix",
+        default="",
+        help=(
+            "Optional suffix appended to per-spec raw/strict artifact names, "
+            "for example '_dense_e4_r700'."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -218,6 +226,11 @@ def _load_feature_sets(features_json_path: Path) -> dict[str, list[str]]:
 def _resolve_feature_set_name(name: str) -> str:
     aliases = {"faith2": "faith"}
     return aliases.get(name, name)
+
+
+def _artifact_name(base: str, suffix: str) -> str:
+    suffix = suffix.strip()
+    return f"{base}{suffix}" if suffix else base
 
 
 def _feature_cols_for_spec(feature_sets: dict[str, list[str]], spec: str) -> list[str]:
@@ -1315,7 +1328,8 @@ def main() -> None:
 
     for spec in specs:
         feature_cols = _feature_cols_for_spec(feature_sets, spec.feature_set)
-        raw_cache_path = predictions_dir / f"{spec.name}_raw_walkfwd.parquet"
+        raw_cache_name = _artifact_name(f"{spec.name}_raw_walkfwd", args.artifact_suffix)
+        raw_cache_path = predictions_dir / f"{raw_cache_name}.parquet"
         raw_pred_df: pd.DataFrame | None = None
         if args.reuse_raw_preds and raw_cache_path.exists():
             cached = pd.read_parquet(raw_cache_path)
@@ -1373,7 +1387,7 @@ def main() -> None:
             min_delta_cumsum_end=float(args.min_delta_cumsum_end),
             selection_objective=str(args.selection_objective),
         )
-        strict_name = f"{spec.name}_strict"
+        strict_name = _artifact_name(f"{spec.name}_strict", args.artifact_suffix)
         strict_path = predictions_dir / f"{strict_name}.parquet"
         strict_df.rename(columns={args.benchmark_model: "benchmark_prediction"}).to_parquet(
             strict_path, index=False
