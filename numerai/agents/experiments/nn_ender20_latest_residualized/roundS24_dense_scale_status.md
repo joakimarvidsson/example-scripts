@@ -24,10 +24,47 @@ Model: `cat_strict_resid008_medfaith64_walkfwd`
 
 - dense raw cache completed:
   - `cat_strict_resid008_medfaith64_walkfwd_raw_walkfwd_dense_e4_r700.parquet`
-- strict scoring was started but not completed in this round before stop
+- dense strict scoring completed:
+  - `cat_strict_resid008_medfaith64_walkfwd_strict_dense_e4_r700`
+  - `delta_mean = 0.0000228`
+  - `delta_cumsum_end = 0.0035496`
+  - `bmc_mean = 0.0003604`
+  - `payout_mean = 0.0251358`
+  - verdict: survives dense evaluation, but only marginally
+
+## Dense tree + MLP blend check
+
+Dense tree winner:
+
+- `cat_strict_resid008_medfaith64_walkfwd_strict_dense_e4_r700`
+
+MLP partners checked:
+
+1. `torch_resid_latest_ender20_roundC_blend_noi12_base_rowfull_refined`
+2. `torch_mlp_resid_latest_ender20_roundM6_base_w80_m3_w20`
+
+Best blend found:
+
+- `95%` dense CatBoost
+- `5%` `torch_mlp_resid_latest_ender20_roundM6_base_w80_m3_w20`
+- artifact:
+  - `blend_cat_strict_resid008_medfaith64_walkfwd_strict_dense_e4_r700_w95_torch_mlp_resid_latest_ender20_roundm6_base_w80_m3_w20_minera577.parquet`
+- metrics:
+  - `corr_mean = 0.0326598`
+  - `corr_sortino = 3.7650`
+  - `bmc_mean = 0.0003706`
+  - `payout_mean = 0.0251497`
+  - `payout_sharpe = 1.8492`
+
+Interpretation:
+
+- The best blend is only a very small adjustment on top of the dense CatBoost standalone model.
+- `roundM6_base_w80_m3_w20` is a slightly better blend partner than the older `roundC` row-full blend in this dense comparison.
+- The blend improvement is real but small, so this is not yet a major step-change model.
 
 ## Decision
 
-Do not proceed to tree+MLP payout blending off the dense LightGBM result.
-
-Finish dense CatBoost strict scoring first, then choose the surviving dense tree candidate before any blend optimization.
+- Reject the dense LightGBM candidate.
+- Keep the dense CatBoost candidate as the current surviving dense tree.
+- If deploying a tree+MLP blend from this round, prefer the `95/5` CatBoost + `roundM6_base_w80_m3_w20` blend.
+- Continue searching for a stronger dense additive tree before treating this as a final winner.
