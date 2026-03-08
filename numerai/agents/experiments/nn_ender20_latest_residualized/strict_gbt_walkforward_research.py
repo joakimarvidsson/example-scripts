@@ -805,6 +805,51 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         model_family="catboost",
     )
     add_spec(
+        name="cat_strict_resid006_medfaith64_walkfwd",
+        residual_scale=0.006,
+        offset=None,
+        params=cat_common,
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid010_medfaith64_walkfwd",
+        residual_scale=0.010,
+        offset=None,
+        params=cat_common,
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid008_medfaith64_d5_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**cat_common, "depth": 5},
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid008_medfaith64_lr2p5e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={
+            **cat_common,
+            "iterations": 600,
+            "learning_rate": 0.025,
+            "l2_leaf_reg": 10.0,
+        },
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid008_smallfaith64_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**cat_common, "depth": 5},
+        feature_set="small+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
         name="cat_strict_resid010_smallfaith64_walkfwd",
         residual_scale=0.010,
         offset=None,
