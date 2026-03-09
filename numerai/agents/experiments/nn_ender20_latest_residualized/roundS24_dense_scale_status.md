@@ -74,6 +74,36 @@ Interpretation:
 - `roundM6_base_w80_m3_w20` is a slightly better blend partner than the older `roundC` row-full blend in this dense comparison.
 - The blend improvement is real but small, so this is not yet a major step-change model.
 
+## Early vs late split sanity check
+
+Dense incumbent: `cat_strict_resid008_medfaith64_walkfwd_strict_dense_e4_r700`
+
+- eras `577-889`
+  - `delta_cumsum_end = 0.0224311`
+  - `bmc_mean = 0.0005578`
+  - `payout_mean = 0.0303372`
+- eras `893-1197`
+  - `delta_cumsum_end = -0.0188815`
+  - `bmc_mean = 0.0001579`
+  - `payout_mean = 0.0197994`
+
+Best dense blend: `95%` CatBoost + `5%` `roundM6_base_w80_m3_w20`
+
+- eras `577-889`
+  - `delta_cumsum_end = 0.0238303`
+  - `bmc_mean = 0.0005700`
+  - `payout_mean = 0.0303511`
+- eras `893-1197`
+  - `delta_cumsum_end = -0.0197620`
+  - `bmc_mean = 0.0001660`
+  - `payout_mean = 0.0198132`
+
+Interpretation:
+
+- The current dense edge is not concentrated only in the later eras.
+- It is stronger in the earlier half of the validation window and gives some of that edge back later.
+- The `95/5` blend behaves almost identically to the dense CatBoost standalone model on this split, which confirms that the blend is a very small adjustment rather than a meaningfully different regime.
+
 ## Decision
 
 - Reject the dense LightGBM candidate.
