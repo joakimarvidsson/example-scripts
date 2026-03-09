@@ -265,7 +265,7 @@ def _evaluate_spec(
         max_corr_with_example=1.1,
         min_delta_mean=0.0,
         min_delta_cumsum_end=0.0,
-        selection_objective="delta_cumsum_end",
+        selection_objective="corr_sortino_vs_benchmark",
     )
     return strict_df, strict_metrics
 
