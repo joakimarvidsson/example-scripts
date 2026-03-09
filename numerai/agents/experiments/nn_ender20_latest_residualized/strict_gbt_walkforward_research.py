@@ -71,6 +71,15 @@ def parse_args() -> argparse.Namespace:
             "Evaluation metrics remain anchored to --target-col."
         ),
     )
+    parser.add_argument(
+        "--train-target-mix",
+        default="",
+        help=(
+            "Optional comma-separated weighted mix for the training target, for example "
+            "'target_ender_20:0.75,target_ender_60:0.25'. "
+            "Overrides --train-target-col when provided."
+        ),
+    )
     parser.add_argument("--id-col", default="id")
     parser.add_argument("--era-col", default="era")
     parser.add_argument("--min-eval-era", type=int, default=577)
@@ -351,6 +360,57 @@ def _parse_lambdas(value: str) -> list[float]:
     if not out:
         raise ValueError("No blend lambdas provided.")
     return sorted(set(out))
+
+
+def _parse_train_target_mix(value: str) -> list[tuple[str, float]]:
+    if not str(value).strip():
+        return []
+    out: list[tuple[str, float]] = []
+    for tok in str(value).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" not in tok:
+            raise ValueError(
+                f"Invalid --train-target-mix token '{tok}'. Expected column:weight."
+            )
+        col, weight_str = tok.split(":", 1)
+        col = col.strip()
+        weight = float(weight_str.strip())
+        if not col:
+            raise ValueError("Empty target column in --train-target-mix.")
+        if weight <= 0.0:
+            raise ValueError(
+                f"Non-positive weight {weight} for target '{col}' in --train-target-mix."
+            )
+        out.append((col, weight))
+    if not out:
+        raise ValueError("No valid entries in --train-target-mix.")
+    return out
+
+
+def _render_train_target_label(
+    train_target_col: str,
+    train_target_mix: list[tuple[str, float]],
+) -> str:
+    if not train_target_mix:
+        return train_target_col
+    return ",".join(f"{col}:{weight:g}" for col, weight in train_target_mix)
+
+
+def _compute_train_target(
+    df: pd.DataFrame,
+    train_target_col: str,
+    train_target_mix: list[tuple[str, float]],
+) -> pd.Series:
+    if not train_target_mix:
+        return df[train_target_col]
+    weights = np.array([weight for _, weight in train_target_mix], dtype=np.float64)
+    total = float(weights.sum())
+    cols = [col for col, _ in train_target_mix]
+    values = df[cols].to_numpy(dtype=np.float64)
+    mixed = values @ weights / total
+    return pd.Series(mixed, index=df.index, name="train_target_mix")
 
 
 def _parse_candidate_modes(value: str) -> list[str]:
@@ -1001,6 +1061,7 @@ def _train_walkforward_model(
     era_col: str,
     eval_target_col: str,
     train_target_col: str,
+    train_target_mix: list[tuple[str, float]],
     benchmark_model: str,
     feature_cols: list[str],
     seed: int,
@@ -1027,13 +1088,14 @@ def _train_walkforward_model(
             feature_cols=feature_cols,
             id_col=id_col,
             era_col=era_col,
-            target_cols=[train_target_col, eval_target_col],
+            target_cols=[train_target_col, eval_target_col, *[col for col, _ in train_target_mix]],
             benchmark_model=benchmark_model,
         )
         train_df = _sample_train_rows_per_era(
             train_df, era_col, max_rows_per_era=max_rows_per_era, seed=seed + block_idx
         )
-        train_df = train_df.dropna(subset=[train_target_col]).reset_index(drop=True)
+        drop_cols = [train_target_col] if not train_target_mix else [col for col, _ in train_target_mix]
+        train_df = train_df.dropna(subset=drop_cols).reset_index(drop=True)
         val_df = _load_rows_for_eras(
             full_path=full_path,
             bench_path=bench_path,
@@ -1041,11 +1103,11 @@ def _train_walkforward_model(
             feature_cols=feature_cols,
             id_col=id_col,
             era_col=era_col,
-            target_cols=[train_target_col, eval_target_col],
+            target_cols=[train_target_col, eval_target_col, *[col for col, _ in train_target_mix]],
             benchmark_model=benchmark_model,
         )
 
-        y_train = train_df[train_target_col]
+        y_train = _compute_train_target(train_df, train_target_col, train_target_mix)
         if spec.residual_scale > 0:
             y_train = subtract_scaled_invnorm_column(
                 y_train,
@@ -1396,7 +1458,9 @@ def main() -> None:
 
     feature_sets = _load_feature_sets(_resolve_features_json())
     specs = _base_model_specs(seed=args.seed)
+    train_target_mix = _parse_train_target_mix(args.train_target_mix)
     train_target_col = str(args.train_target_col).strip() or str(args.target_col)
+    train_target_label = _render_train_target_label(train_target_col, train_target_mix)
     if args.spec_names.strip():
         wanted = {name.strip() for name in args.spec_names.split(",") if name.strip()}
         specs = [spec for spec in specs if spec.name in wanted]
@@ -1443,7 +1507,6 @@ def main() -> None:
             required = {
                 args.id_col,
                 args.era_col,
-                train_target_col,
                 args.target_col,
                 args.benchmark_model,
                 "prediction_raw",
@@ -1471,6 +1534,7 @@ def main() -> None:
                 era_col=args.era_col,
                 eval_target_col=args.target_col,
                 train_target_col=train_target_col,
+                train_target_mix=train_target_mix,
                 benchmark_model=args.benchmark_model,
                 feature_cols=feature_cols,
                 seed=args.seed,
@@ -1507,7 +1571,7 @@ def main() -> None:
                 "data_version": "v5.2",
                 "feature_set": spec.feature_set,
                 "target": args.target_col,
-                "train_target": train_target_col,
+                "train_target": train_target_label,
                 "oof_rows": int(strict_df.shape[0]),
                 "oof_eras": int(len(eval_eras)),
                 "walkforward_block_size_eras": int(args.block_size),
@@ -1522,7 +1586,8 @@ def main() -> None:
                 "base_model_name": spec.name,
                 "offset": spec.offset,
                 "residual_scale": spec.residual_scale,
-                "train_target": train_target_col,
+                "train_target": train_target_label,
+                "train_target_mix": train_target_mix,
                 "eval_target": args.target_col,
                 "params": spec.params,
             },
@@ -1668,7 +1733,8 @@ def main() -> None:
                 "min_delta_mean": args.min_delta_mean,
                 "min_delta_cumsum_end": args.min_delta_cumsum_end,
                 "selection_objective": args.selection_objective,
-                "train_target": train_target_col,
+                "train_target": train_target_label,
+                "train_target_mix": train_target_mix,
                 "eval_target": args.target_col,
             },
             "top_models": summary_df.to_dict(orient="records"),
