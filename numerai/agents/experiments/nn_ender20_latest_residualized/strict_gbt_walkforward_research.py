@@ -11,7 +11,6 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBRegressor
 
 from agents.code.metrics import numerai_metrics
 from agents.code.modeling.utils.target_transforms import (
@@ -538,6 +537,12 @@ def _compute_delta_metrics(
 def _build_model(spec: ModelSpec):
     params = {k: v for k, v in spec.params.items() if not str(k).startswith("_")}
     if spec.model_family == "xgb":
+        try:
+            from xgboost import XGBRegressor
+        except ImportError as exc:
+            raise ImportError(
+                "xgboost is required for xgb specs. Install with `.venv/bin/pip install xgboost`."
+            ) from exc
         return XGBRegressor(**params)
     if spec.model_family == "lgbm":
         try:
@@ -1501,19 +1506,57 @@ def _write_result_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
-def _resolve_features_json() -> Path:
+def _repo_root_candidates() -> list[Path]:
+    script_root = Path(__file__).resolve().parents[4]
     candidates = [
-        Path("numerai/v5.2/features.json"),
-        Path("v5.2/features.json"),
-        Path(__file__).resolve().parents[4] / "v5.2" / "features.json",
+        Path.cwd().resolve(),
+        script_root,
+        script_root.with_name("example-scripts"),
     ]
+    out: list[Path] = []
+    seen: set[Path] = set()
     for cand in candidates:
-        c = cand.resolve()
-        if c.exists():
-            return c
+        try:
+            resolved = cand.resolve()
+        except FileNotFoundError:
+            resolved = cand
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    return out
+
+
+def _resolve_input_path(path: Path) -> Path:
+    if path.is_absolute() and path.exists():
+        return path.resolve()
+    rel = Path(path)
+    for root in _repo_root_candidates():
+        cand = (root / rel).resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(
+        f"Could not locate '{path}' under any repo root candidate: "
+        + ", ".join(str(root) for root in _repo_root_candidates())
+    )
+
+
+def _resolve_features_json() -> Path:
+    for root in _repo_root_candidates():
+        for rel in (
+            Path("numerai/v5.2/features.json"),
+            Path("v5.2/features.json"),
+        ):
+            cand = (root / rel).resolve()
+            if cand.exists():
+                return cand
     raise FileNotFoundError(
         "Could not locate features.json in expected locations: "
-        + ", ".join(str(c) for c in candidates)
+        + ", ".join(
+            str(root / rel)
+            for root in _repo_root_candidates()
+            for rel in (Path("numerai/v5.2/features.json"), Path("v5.2/features.json"))
+        )
     )
 
 
