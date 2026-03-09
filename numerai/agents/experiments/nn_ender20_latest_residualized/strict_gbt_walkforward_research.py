@@ -8,7 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 from agents.code.metrics import numerai_metrics
@@ -534,8 +536,9 @@ def _compute_delta_metrics(
 
 
 def _build_model(spec: ModelSpec):
+    params = {k: v for k, v in spec.params.items() if not str(k).startswith("_")}
     if spec.model_family == "xgb":
-        return XGBRegressor(**spec.params)
+        return XGBRegressor(**params)
     if spec.model_family == "lgbm":
         try:
             import lightgbm as lgb
@@ -543,7 +546,7 @@ def _build_model(spec: ModelSpec):
             raise ImportError(
                 "lightgbm is required for lgbm specs. Install with `.venv/bin/pip install lightgbm`."
             ) from exc
-        return lgb.LGBMRegressor(**spec.params)
+        return lgb.LGBMRegressor(**params)
     if spec.model_family == "catboost":
         try:
             from catboost import CatBoostRegressor
@@ -551,10 +554,37 @@ def _build_model(spec: ModelSpec):
             raise ImportError(
                 "catboost is required for catboost specs. Install with `pip install catboost`."
             ) from exc
-        return CatBoostRegressor(**spec.params)
+        return CatBoostRegressor(**params)
     if spec.model_family == "ridge":
-        return Ridge(**spec.params)
+        return Ridge(**params)
     raise ValueError(f"Unsupported model_family: {spec.model_family}")
+
+
+def _prepare_features(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    *,
+    feature_cols: list[str],
+    spec: ModelSpec,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    train_x = train_df[feature_cols].to_numpy(dtype=np.float32, copy=False)
+    val_x = val_df[feature_cols].to_numpy(dtype=np.float32, copy=False)
+    transform = str(spec.params.get("_feature_transform", "")).strip().lower()
+    if not transform:
+        return train_x, val_x
+    if transform == "standardize":
+        scaler = StandardScaler()
+        return scaler.fit_transform(train_x), scaler.transform(val_x)
+    if transform.startswith("pca"):
+        n_components = int(transform[3:])
+        scaler = StandardScaler()
+        train_scaled = scaler.fit_transform(train_x)
+        val_scaled = scaler.transform(val_x)
+        n_components = max(1, min(int(n_components), train_scaled.shape[1]))
+        pca = PCA(n_components=n_components, svd_solver="randomized", random_state=seed)
+        return pca.fit_transform(train_scaled), pca.transform(val_scaled)
+    raise ValueError(f"Unsupported _feature_transform: {transform}")
 
 
 def _base_model_specs(seed: int) -> list[ModelSpec]:
@@ -976,6 +1006,38 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         feature_set="medium+faith2:64",
         model_family="ridge",
     )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a10_std_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "standardize"},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a10_pca32_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "pca32"},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a10_pca64_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "pca64"},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a10_pca96_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "pca96"},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
     return specs
 
 
@@ -1122,9 +1184,16 @@ def _train_walkforward_model(
                 center_per_era=False,
             )
 
+        train_x, val_x = _prepare_features(
+            train_df,
+            val_df,
+            feature_cols=feature_cols,
+            spec=spec,
+            seed=seed + block_idx,
+        )
         model = _build_model(spec)
-        model.fit(train_df[feature_cols], y_train)
-        pred = model.predict(val_df[feature_cols]).astype(np.float64)
+        model.fit(train_x, y_train)
+        pred = model.predict(val_x).astype(np.float64)
 
         out = val_df[[id_col, era_col, eval_target_col, benchmark_model]].copy()
         out["prediction_raw"] = pred
