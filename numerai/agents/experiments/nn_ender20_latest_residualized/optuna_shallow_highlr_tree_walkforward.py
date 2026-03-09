@@ -17,6 +17,7 @@ from agents.experiments.nn_ender20_latest_residualized.strict_gbt_walkforward_re
     _parse_candidate_modes,
     _parse_lambdas,
     _resolve_features_json,
+    _resolve_input_path,
     _select_strict_blend,
     _train_walkforward_model,
     _write_result_json,
@@ -294,6 +295,9 @@ def _trial_row(
 
 def main() -> None:
     args = parse_args()
+    args.full_data_path = _resolve_input_path(args.full_data_path)
+    args.benchmark_data_path = _resolve_input_path(args.benchmark_data_path)
+    args.example_preds_path = _resolve_input_path(args.example_preds_path)
     experiment_dir = args.experiment_dir.resolve()
     predictions_dir = experiment_dir / "predictions"
     results_dir = experiment_dir / "results"
