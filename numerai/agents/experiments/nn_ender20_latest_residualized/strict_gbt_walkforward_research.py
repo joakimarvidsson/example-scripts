@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
 
 from agents.code.metrics import numerai_metrics
@@ -480,6 +481,8 @@ def _build_model(spec: ModelSpec):
                 "catboost is required for catboost specs. Install with `pip install catboost`."
             ) from exc
         return CatBoostRegressor(**spec.params)
+    if spec.model_family == "ridge":
+        return Ridge(**spec.params)
     raise ValueError(f"Unsupported model_family: {spec.model_family}")
 
 
@@ -856,6 +859,51 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         params={**cat_common, "depth": 5},
         feature_set="small+faith2:64",
         model_family="catboost",
+    )
+
+    ridge_common = {
+        "fit_intercept": True,
+        "solver": "auto",
+    }
+    add_spec(
+        name="ridge_strict_direct_smallfaith64_a1_walkfwd",
+        residual_scale=0.0,
+        offset=None,
+        params={**ridge_common, "alpha": 1.0},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a01_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 0.1},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a1_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 1.0},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_smallfaith64_a10_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0},
+        feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_medfaith64_a1_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 1.0},
+        feature_set="medium+faith2:64",
+        model_family="ridge",
     )
     return specs
 
