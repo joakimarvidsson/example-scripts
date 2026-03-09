@@ -332,12 +332,6 @@ class _MultitaskTorchModel:
 
         x_val_tensor = self._tensor(x_val)
         y_main_val_tensor = self._tensor(y_main_val.reshape(-1, 1))
-        y_aux_val_tensor = (
-            self._tensor(y_aux_val.reshape(-1, 1))
-            if y_aux_val is not None and self._aux_weight > 0.0
-            else None
-        )
-
         n_train = x_train.shape[0]
         indices = np.arange(n_train)
         rng = np.random.default_rng(self._seed)
@@ -368,12 +362,8 @@ class _MultitaskTorchModel:
 
             self._model.eval()
             with torch.no_grad():
-                pred_main_val, pred_aux_val = self._model(x_val_tensor)
+                pred_main_val, _pred_aux_val = self._model(x_val_tensor)
                 val_loss = float(mse(pred_main_val, y_main_val_tensor).item())
-                if y_aux_val_tensor is not None:
-                    val_loss = val_loss + self._aux_weight * float(
-                        mse(pred_aux_val, y_aux_val_tensor).item()
-                    )
 
             if val_loss < best_val - 1e-5:
                 best_val = val_loss
@@ -416,8 +406,8 @@ def _base_specs() -> list[MultitaskSpec]:
         "learning_rate": 2e-4,
         "weight_decay": 1e-4,
         "batch_size": 4096,
-        "max_epochs": 70,
-        "patience": 8,
+        "max_epochs": 50,
+        "patience": 6,
         "val_era_fraction": 0.12,
         "clip_grad_norm": 1.0,
     }
