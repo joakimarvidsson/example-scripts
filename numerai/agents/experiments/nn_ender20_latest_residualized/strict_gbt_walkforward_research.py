@@ -63,6 +63,14 @@ def parse_args() -> argparse.Namespace:
         default="v52_lgbm_ender20",
     )
     parser.add_argument("--target-col", default="target_ender_20")
+    parser.add_argument(
+        "--train-target-col",
+        default="",
+        help=(
+            "Optional training target column. If omitted, uses --target-col. "
+            "Evaluation metrics remain anchored to --target-col."
+        ),
+    )
     parser.add_argument("--id-col", default="id")
     parser.add_argument("--era-col", default="era")
     parser.add_argument("--min-eval-era", type=int, default=577)
@@ -273,14 +281,17 @@ def _load_rows_for_eras(
     feature_cols: list[str],
     id_col: str,
     era_col: str,
-    target_col: str,
+    target_cols: list[str],
     benchmark_model: str,
 ) -> pd.DataFrame:
+    target_cols = list(dict.fromkeys(target_cols))
     if not eras:
-        return pd.DataFrame(columns=[id_col, era_col, target_col, benchmark_model] + feature_cols)
+        return pd.DataFrame(
+            columns=[id_col, era_col, *target_cols, benchmark_model, *feature_cols]
+        )
 
     era_strs = [f"{era:04d}" for era in eras]
-    cols = [id_col, era_col, target_col] + feature_cols
+    cols = [id_col, era_col, *target_cols, *feature_cols]
     data_df = pd.read_parquet(full_path, columns=cols, filters=[(era_col, "in", era_strs)])
 
     benchmark_df = pd.read_parquet(
@@ -988,7 +999,8 @@ def _train_walkforward_model(
     max_rows_per_era: int,
     id_col: str,
     era_col: str,
-    target_col: str,
+    eval_target_col: str,
+    train_target_col: str,
     benchmark_model: str,
     feature_cols: list[str],
     seed: int,
@@ -1015,12 +1027,13 @@ def _train_walkforward_model(
             feature_cols=feature_cols,
             id_col=id_col,
             era_col=era_col,
-            target_col=target_col,
+            target_cols=[train_target_col, eval_target_col],
             benchmark_model=benchmark_model,
         )
         train_df = _sample_train_rows_per_era(
             train_df, era_col, max_rows_per_era=max_rows_per_era, seed=seed + block_idx
         )
+        train_df = train_df.dropna(subset=[train_target_col]).reset_index(drop=True)
         val_df = _load_rows_for_eras(
             full_path=full_path,
             bench_path=bench_path,
@@ -1028,11 +1041,11 @@ def _train_walkforward_model(
             feature_cols=feature_cols,
             id_col=id_col,
             era_col=era_col,
-            target_col=target_col,
+            target_cols=[train_target_col, eval_target_col],
             benchmark_model=benchmark_model,
         )
 
-        y_train = train_df[target_col]
+        y_train = train_df[train_target_col]
         if spec.residual_scale > 0:
             y_train = subtract_scaled_invnorm_column(
                 y_train,
@@ -1051,7 +1064,7 @@ def _train_walkforward_model(
         model.fit(train_df[feature_cols], y_train)
         pred = model.predict(val_df[feature_cols]).astype(np.float64)
 
-        out = val_df[[id_col, era_col, target_col, benchmark_model]].copy()
+        out = val_df[[id_col, era_col, eval_target_col, benchmark_model]].copy()
         out["prediction_raw"] = pred
         preds.append(out)
 
@@ -1383,6 +1396,7 @@ def main() -> None:
 
     feature_sets = _load_feature_sets(_resolve_features_json())
     specs = _base_model_specs(seed=args.seed)
+    train_target_col = str(args.train_target_col).strip() or str(args.target_col)
     if args.spec_names.strip():
         wanted = {name.strip() for name in args.spec_names.split(",") if name.strip()}
         specs = [spec for spec in specs if spec.name in wanted]
@@ -1429,6 +1443,7 @@ def main() -> None:
             required = {
                 args.id_col,
                 args.era_col,
+                train_target_col,
                 args.target_col,
                 args.benchmark_model,
                 "prediction_raw",
@@ -1454,7 +1469,8 @@ def main() -> None:
                 max_rows_per_era=args.max_rows_per_era,
                 id_col=args.id_col,
                 era_col=args.era_col,
-                target_col=args.target_col,
+                eval_target_col=args.target_col,
+                train_target_col=train_target_col,
                 benchmark_model=args.benchmark_model,
                 feature_cols=feature_cols,
                 seed=args.seed,
@@ -1491,6 +1507,7 @@ def main() -> None:
                 "data_version": "v5.2",
                 "feature_set": spec.feature_set,
                 "target": args.target_col,
+                "train_target": train_target_col,
                 "oof_rows": int(strict_df.shape[0]),
                 "oof_eras": int(len(eval_eras)),
                 "walkforward_block_size_eras": int(args.block_size),
@@ -1505,6 +1522,8 @@ def main() -> None:
                 "base_model_name": spec.name,
                 "offset": spec.offset,
                 "residual_scale": spec.residual_scale,
+                "train_target": train_target_col,
+                "eval_target": args.target_col,
                 "params": spec.params,
             },
             "output": {"predictions_file": str(strict_path.relative_to(experiment_dir.parent))},
@@ -1649,6 +1668,8 @@ def main() -> None:
                 "min_delta_mean": args.min_delta_mean,
                 "min_delta_cumsum_end": args.min_delta_cumsum_end,
                 "selection_objective": args.selection_objective,
+                "train_target": train_target_col,
+                "eval_target": args.target_col,
             },
             "top_models": summary_df.to_dict(orient="records"),
             "selected_best_model": best_name,
