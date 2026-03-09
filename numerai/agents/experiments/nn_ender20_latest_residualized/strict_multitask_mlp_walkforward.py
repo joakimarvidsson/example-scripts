@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -330,9 +331,16 @@ class _MultitaskTorchModel:
             weight_decay=self._weight_decay,
         )
 
+        x_train_tensor = self._tensor(x_train)
+        y_main_train_tensor = self._tensor(y_main_train.reshape(-1, 1))
+        y_aux_train_tensor = (
+            self._tensor(y_aux_train.reshape(-1, 1))
+            if y_aux_train is not None and self._aux_weight > 0.0
+            else None
+        )
         x_val_tensor = self._tensor(x_val)
         y_main_val_tensor = self._tensor(y_main_val.reshape(-1, 1))
-        n_train = x_train.shape[0]
+        n_train = x_train_tensor.shape[0]
         indices = np.arange(n_train)
         rng = np.random.default_rng(self._seed)
         best_val = float("inf")
@@ -344,14 +352,14 @@ class _MultitaskTorchModel:
             rng.shuffle(indices)
             for start in range(0, n_train, self._batch_size):
                 batch_idx = indices[start : start + self._batch_size]
-                xb = self._tensor(x_train[batch_idx])
-                yb_main = self._tensor(y_main_train[batch_idx].reshape(-1, 1))
+                xb = x_train_tensor[batch_idx]
+                yb_main = y_main_train_tensor[batch_idx]
 
                 optimizer.zero_grad(set_to_none=True)
                 pred_main, pred_aux = self._model(xb)
                 loss = mse(pred_main, yb_main)
-                if y_aux_train is not None and self._aux_weight > 0.0:
-                    yb_aux = self._tensor(y_aux_train[batch_idx].reshape(-1, 1))
+                if y_aux_train_tensor is not None:
+                    yb_aux = y_aux_train_tensor[batch_idx]
                     loss = loss + self._aux_weight * mse(pred_aux, yb_aux)
                 loss.backward()
                 if self._clip_grad_norm is not None:
@@ -647,6 +655,11 @@ def _train_walkforward_model(
 
 
 def main() -> None:
+    if sys.version_info >= (3, 14):
+        raise RuntimeError(
+            "strict_multitask_mlp_walkforward.py is unstable with torch on Python 3.14 "
+            "in this environment. Use Python 3.12 or 3.13."
+        )
     args = parse_args()
     experiment_dir = args.experiment_dir.resolve()
     predictions_dir = experiment_dir / "predictions"
