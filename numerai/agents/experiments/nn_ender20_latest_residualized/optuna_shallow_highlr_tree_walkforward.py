@@ -61,6 +61,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--families", default="xgb,lgbm,catboost")
     parser.add_argument("--n-trials", type=int, default=6)
     parser.add_argument("--seed", type=int, default=2601)
+    parser.add_argument("--depth-min", type=int, default=3)
+    parser.add_argument("--depth-max", type=int, default=6)
+    parser.add_argument("--learning-rate-min", type=float, default=0.05)
+    parser.add_argument("--learning-rate-max", type=float, default=0.5)
+    parser.add_argument(
+        "--feature-choices",
+        default="",
+        help="Optional comma-separated feature sets to constrain the search.",
+    )
+    parser.add_argument(
+        "--residual-scale-choices",
+        default="",
+        help="Optional comma-separated residual scales to constrain the search.",
+    )
+    parser.add_argument(
+        "--lgbm-boosting-types",
+        default="gbdt,dart",
+        help="Comma-separated LightGBM boosting types to allow.",
+    )
+    parser.add_argument(
+        "--xgb-offset-choices",
+        default="full,0,1,2,3",
+        help="Comma-separated XGBoost offset choices.",
+    )
     parser.add_argument("--scout-eval-era-step", type=int, default=8)
     parser.add_argument("--scout-block-size", type=int, default=26)
     parser.add_argument("--scout-max-rows-per-era", type=int, default=500)
@@ -102,6 +126,14 @@ def _parse_families(raw: str) -> list[str]:
     return out
 
 
+def _parse_csv_choices(raw: str) -> list[str]:
+    return [token.strip() for token in str(raw).split(",") if token.strip()]
+
+
+def _parse_float_choices(raw: str) -> list[float]:
+    return [float(token.strip()) for token in str(raw).split(",") if token.strip()]
+
+
 def _load_all_eras(full_data_path: Path, era_col: str) -> list[int]:
     era_only = pd.read_parquet(full_data_path, columns=[era_col])
     return sorted({int(e) for e in era_only[era_col].astype(str).tolist()})
@@ -115,7 +147,9 @@ def _eval_eras(all_eras: list[int], *, min_eval_era: int, max_eval_era: int, eva
     ]
 
 
-def _feature_choices_for_family(family: str) -> list[str]:
+def _feature_choices_for_family(family: str, override: list[str] | None = None) -> list[str]:
+    if override:
+        return override
     if family == "xgb":
         return ["medium", "small", "medium+faith2:64", "small+faith2:64"]
     if family == "lgbm":
@@ -125,17 +159,31 @@ def _feature_choices_for_family(family: str) -> list[str]:
     raise ValueError(f"Unsupported family: {family}")
 
 
-def _spec_from_trial(family: str, trial: optuna.Trial, *, seed: int) -> ModelSpec:
-    feature_set = trial.suggest_categorical("feature_set", _feature_choices_for_family(family))
-    residual_scale = trial.suggest_categorical(
-        "residual_scale",
-        [0.0, 0.006, 0.008, 0.010, 0.012],
+def _spec_from_trial(
+    family: str,
+    trial: optuna.Trial,
+    *,
+    seed: int,
+    args: argparse.Namespace,
+) -> ModelSpec:
+    feature_override = _parse_csv_choices(args.feature_choices) if args.feature_choices.strip() else None
+    residual_choices = (
+        _parse_float_choices(args.residual_scale_choices)
+        if args.residual_scale_choices.strip()
+        else [0.0, 0.006, 0.008, 0.010, 0.012]
     )
-    depth = trial.suggest_int("max_depth", 3, 6)
-    learning_rate = trial.suggest_float("learning_rate", 0.05, 0.5, log=True)
+    feature_set = trial.suggest_categorical("feature_set", _feature_choices_for_family(family, feature_override))
+    residual_scale = trial.suggest_categorical("residual_scale", residual_choices)
+    depth = trial.suggest_int("max_depth", int(args.depth_min), int(args.depth_max))
+    learning_rate = trial.suggest_float(
+        "learning_rate",
+        float(args.learning_rate_min),
+        float(args.learning_rate_max),
+        log=True,
+    )
 
     if family == "xgb":
-        offset_token = trial.suggest_categorical("offset", ["full", "0", "1", "2", "3"])
+        offset_token = trial.suggest_categorical("offset", _parse_csv_choices(args.xgb_offset_choices))
         offset = None if offset_token == "full" else int(offset_token)
         params = {
             "objective": "reg:squarederror",
@@ -162,7 +210,7 @@ def _spec_from_trial(family: str, trial: optuna.Trial, *, seed: int) -> ModelSpe
         )
 
     if family == "lgbm":
-        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
+        boosting_type = trial.suggest_categorical("boosting_type", _parse_csv_choices(args.lgbm_boosting_types))
         params: dict[str, Any] = {
             "n_estimators": trial.suggest_int("n_estimators", 80, 420, step=20),
             "learning_rate": learning_rate,
@@ -374,7 +422,7 @@ def main() -> None:
         trial_payloads: dict[int, dict[str, Any]] = {}
 
         def objective(trial: optuna.Trial) -> float:
-            spec = _spec_from_trial(family, trial, seed=family_seed + trial.number)
+            spec = _spec_from_trial(family, trial, seed=family_seed + trial.number, args=args)
             _, metrics = _evaluate_spec(
                 spec,
                 args=args,
