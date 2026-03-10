@@ -51,6 +51,7 @@ class MultitaskSpec:
     name: str
     feature_set: str
     residual_scale: float
+    main_target_mix: tuple[tuple[str, float], ...] | None
     aux_target_col: str | None
     aux_weight: float
     hidden_layer_sizes: tuple[int, ...]
@@ -424,6 +425,7 @@ def _base_specs() -> list[MultitaskSpec]:
         "val_era_fraction": 0.12,
         "clip_grad_norm": 1.0,
     }
+    common_no_resid = {k: v for k, v in common.items() if k != "residual_scale"}
     small_common = {
         "feature_set": "small+faith2:64",
         "hidden_layer_sizes": (384, 192, 96),
@@ -451,36 +453,82 @@ def _base_specs() -> list[MultitaskSpec]:
     return [
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_mainonly_walkfwd",
+            main_target_mix=None,
             aux_target_col=None,
             aux_weight=0.0,
             **common,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_auxe60_w025_walkfwd",
+            main_target_mix=None,
             aux_target_col="target_ender_60",
             aux_weight=0.25,
             **common,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_auxe60_w050_walkfwd",
+            main_target_mix=None,
             aux_target_col="target_ender_60",
             aux_weight=0.50,
             **common,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_auxt60_w025_walkfwd",
+            main_target_mix=None,
             aux_target_col="target_teager2b_60",
             aux_weight=0.25,
             **common,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_auxt60_w050_walkfwd",
+            main_target_mix=None,
             aux_target_col="target_teager2b_60",
             aux_weight=0.50,
             **common,
         ),
         MultitaskSpec(
+            name="mtmlp_strict_resid006_medfaith64_mainonly_walkfwd",
+            main_target_mix=None,
+            residual_scale=0.006,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medfaith64_mainonly_walkfwd",
+            main_target_mix=None,
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid006_medfaith64_mix_e20e60_7525_walkfwd",
+            main_target_mix=(("target_ender_20", 0.75), ("target_ender_60", 0.25)),
+            residual_scale=0.006,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid006_medfaith64_mix_e20t60_7525_walkfwd",
+            main_target_mix=(("target_ender_20", 0.75), ("target_teager2b_60", 0.25)),
+            residual_scale=0.006,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid008_medfaith64_mix_e20e60_7525_walkfwd",
+            main_target_mix=(("target_ender_20", 0.75), ("target_ender_60", 0.25)),
+            residual_scale=0.008,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid,
+        ),
+        MultitaskSpec(
             name="mtmlp_strict_resid006_smallfaith64_mainonly_walkfwd",
+            main_target_mix=None,
             residual_scale=0.006,
             aux_target_col=None,
             aux_weight=0.0,
@@ -488,6 +536,7 @@ def _base_specs() -> list[MultitaskSpec]:
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_smallfaith64_mainonly_walkfwd",
+            main_target_mix=None,
             residual_scale=0.008,
             aux_target_col=None,
             aux_weight=0.0,
@@ -495,6 +544,7 @@ def _base_specs() -> list[MultitaskSpec]:
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid006_smallfaith64_auxt60_w025_walkfwd",
+            main_target_mix=None,
             residual_scale=0.006,
             aux_target_col="target_teager2b_60",
             aux_weight=0.25,
@@ -502,6 +552,7 @@ def _base_specs() -> list[MultitaskSpec]:
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid006_medcompactfaith64_mainonly_walkfwd",
+            main_target_mix=None,
             residual_scale=0.006,
             aux_target_col=None,
             aux_weight=0.0,
@@ -509,6 +560,7 @@ def _base_specs() -> list[MultitaskSpec]:
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid008_medcompactfaith64_auxt60_w025_walkfwd",
+            main_target_mix=None,
             residual_scale=0.008,
             aux_target_col="target_teager2b_60",
             aux_weight=0.25,
@@ -562,6 +614,37 @@ def _residualize_target(
     return resid.to_numpy(dtype=np.float32, copy=False)
 
 
+def _mixed_residual_target(
+    df: pd.DataFrame,
+    *,
+    target_col: str,
+    benchmark_model: str,
+    era_col: str,
+    residual_scale: float,
+    main_target_mix: tuple[tuple[str, float], ...] | None,
+) -> np.ndarray:
+    if not main_target_mix:
+        return _residualize_target(
+            df[target_col],
+            df[benchmark_model],
+            df[era_col],
+            scale=residual_scale,
+        )
+    weights = np.asarray([float(weight) for _col, weight in main_target_mix], dtype=np.float64)
+    if not np.isfinite(weights).all() or float(weights.sum()) <= 0.0:
+        raise ValueError(f"Invalid main target mix weights: {main_target_mix}")
+    weights = weights / float(weights.sum())
+    mixed = np.zeros(len(df), dtype=np.float64)
+    for (mix_col, _weight), norm_weight in zip(main_target_mix, weights):
+        mixed += float(norm_weight) * _residualize_target(
+            df[mix_col],
+            df[benchmark_model],
+            df[era_col],
+            scale=residual_scale,
+        ).astype(np.float64, copy=False)
+    return mixed.astype(np.float32, copy=False)
+
+
 def _train_walkforward_model(
     spec: MultitaskSpec,
     *,
@@ -586,6 +669,10 @@ def _train_walkforward_model(
     ]
     preds: list[pd.DataFrame] = []
     extra_targets = [target_col]
+    if spec.main_target_mix:
+        for mix_col, _weight in spec.main_target_mix:
+            if mix_col not in extra_targets:
+                extra_targets.append(mix_col)
     if spec.aux_target_col:
         extra_targets.append(spec.aux_target_col)
 
@@ -618,6 +705,10 @@ def _train_walkforward_model(
             seed=seed + block_idx,
         )
         drop_cols = [target_col]
+        if spec.main_target_mix:
+            for mix_col, _weight in spec.main_target_mix:
+                if mix_col not in drop_cols:
+                    drop_cols.append(mix_col)
         if spec.aux_target_col and spec.aux_weight > 0.0:
             drop_cols.append(spec.aux_target_col)
         train_df = train_df.dropna(subset=drop_cols).reset_index(drop=True)
@@ -648,17 +739,21 @@ def _train_walkforward_model(
             val_df[feature_cols].to_numpy(dtype=np.float32, copy=False)
         ).astype(np.float32, copy=False)
 
-        y_main_fit = _residualize_target(
-            fit_df[target_col],
-            fit_df[benchmark_model],
-            fit_df[era_col],
-            scale=spec.residual_scale,
+        y_main_fit = _mixed_residual_target(
+            fit_df,
+            target_col=target_col,
+            benchmark_model=benchmark_model,
+            era_col=era_col,
+            residual_scale=spec.residual_scale,
+            main_target_mix=spec.main_target_mix,
         )
-        y_main_internal_val = _residualize_target(
-            internal_val_df[target_col],
-            internal_val_df[benchmark_model],
-            internal_val_df[era_col],
-            scale=spec.residual_scale,
+        y_main_internal_val = _mixed_residual_target(
+            internal_val_df,
+            target_col=target_col,
+            benchmark_model=benchmark_model,
+            era_col=era_col,
+            residual_scale=spec.residual_scale,
+            main_target_mix=spec.main_target_mix,
         )
 
         y_aux_fit: np.ndarray | None = None
@@ -821,6 +916,11 @@ def main() -> None:
                 {
                     "model": raw_cache_name,
                     "feature_set": spec.feature_set,
+                    "main_target_mix": (
+                        ",".join(f"{col}:{weight:g}" for col, weight in spec.main_target_mix)
+                        if spec.main_target_mix
+                        else "none"
+                    ),
                     "aux_target": spec.aux_target_col or "none",
                     "aux_weight": spec.aux_weight,
                     "raw_only": True,
@@ -859,6 +959,11 @@ def main() -> None:
                 "data_version": "v5.2",
                 "feature_set": spec.feature_set,
                 "target": args.target_col,
+                "main_target_mix": (
+                    [[col, float(weight)] for col, weight in spec.main_target_mix]
+                    if spec.main_target_mix
+                    else None
+                ),
                 "aux_target": spec.aux_target_col,
                 "oof_rows": int(strict_df.shape[0]),
                 "oof_eras": int(len(eval_eras)),
@@ -875,6 +980,11 @@ def main() -> None:
             "model": {
                 "type": "multitask_torch_mlp_walkforward_strict_delta",
                 "base_model_name": spec.name,
+                "main_target_mix": (
+                    [[col, float(weight)] for col, weight in spec.main_target_mix]
+                    if spec.main_target_mix
+                    else None
+                ),
                 "aux_target": spec.aux_target_col,
                 "aux_weight": spec.aux_weight,
                 "residual_scale": spec.residual_scale,
@@ -896,6 +1006,11 @@ def main() -> None:
             {
                 "model": strict_name,
                 "feature_set": spec.feature_set,
+                "main_target_mix": (
+                    ",".join(f"{col}:{weight:g}" for col, weight in spec.main_target_mix)
+                    if spec.main_target_mix
+                    else "none"
+                ),
                 "aux_target": spec.aux_target_col or "none",
                 "aux_weight": spec.aux_weight,
                 **strict_metrics,

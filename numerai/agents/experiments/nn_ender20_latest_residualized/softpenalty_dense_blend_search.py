@@ -301,8 +301,7 @@ def main() -> None:
 
     cheap_rows: list[dict] = []
     for weights in weight_grid:
-        raw = x @ weights
-        pred = _fast_rank01_per_era(raw, era_groups)
+        pred = x @ weights
         cheap_score, corr_bench, corr_example, delta_mean = _cheap_prefilter_score(
             pred,
             target=target,
@@ -329,7 +328,8 @@ def main() -> None:
     candidates = cheap_rows[: max(1, min(int(args.prefilter_top_n), len(cheap_rows)))]
 
     for row0 in candidates:
-        pred = pd.Series(row0["pred"], index=merged.index, dtype=np.float64)
+        pred_rank = _fast_rank01_per_era(np.asarray(row0["pred"], dtype=np.float64), era_groups)
+        pred = pd.Series(pred_rank, index=merged.index, dtype=np.float64)
         corr_bench = float(_safe_corr(pred, bench_rank))
         corr_example = float(_safe_corr(pred, example_rank))
         tmp = merged[[args.id_col, args.era_col, args.target_col, args.benchmark_model]].copy()
