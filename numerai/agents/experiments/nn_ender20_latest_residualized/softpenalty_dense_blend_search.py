@@ -161,6 +161,26 @@ def _build_era_groups(eras: pd.Series) -> list[np.ndarray]:
     return out
 
 
+def _fast_rank01_per_era(values: np.ndarray, era_groups: list[np.ndarray]) -> np.ndarray:
+    out = np.empty_like(values, dtype=np.float64)
+    for idx in era_groups:
+        v = values[idx]
+        order = np.argsort(v, kind="mergesort")
+        sorted_v = v[order]
+        n = len(sorted_v)
+        ranks = np.empty(n, dtype=np.float64)
+        start = 0
+        while start < n:
+            end = start + 1
+            while end < n and sorted_v[end] == sorted_v[start]:
+                end += 1
+            avg_rank = ((start + 1) + end) / 2.0
+            ranks[order[start:end]] = avg_rank / n
+            start = end
+        out[idx] = ranks
+    return out
+
+
 def _cheap_prefilter_score(
     pred: np.ndarray,
     *,
@@ -248,12 +268,22 @@ def main() -> None:
         how="left",
         validate="one_to_one",
     )
-    merged["benchmark_rank"] = _rank01_per_era(merged[args.benchmark_model], merged[args.era_col])
-    merged["example_rank"] = _rank01_per_era(merged["example_prediction"], merged[args.era_col])
+    era_groups = _build_era_groups(merged[args.era_col])
+    merged["benchmark_rank"] = _fast_rank01_per_era(
+        merged[args.benchmark_model].to_numpy(dtype=np.float64),
+        era_groups,
+    )
+    merged["example_rank"] = _fast_rank01_per_era(
+        merged["example_prediction"].to_numpy(dtype=np.float64),
+        era_groups,
+    )
     rank_cols: list[str] = []
     for model_name in model_names:
         rank_col = f"{model_name}_rank"
-        merged[rank_col] = _rank01_per_era(merged[model_name], merged[args.era_col])
+        merged[rank_col] = _fast_rank01_per_era(
+            merged[model_name].to_numpy(dtype=np.float64),
+            era_groups,
+        )
         rank_cols.append(rank_col)
 
     rng = np.random.default_rng(int(args.seed))
@@ -267,13 +297,12 @@ def main() -> None:
     example_rank = merged["example_rank"].astype(np.float64)
     eras = merged[args.era_col]
     target = merged[args.target_col].to_numpy(dtype=np.float64)
-    era_groups = _build_era_groups(eras)
     early_group_count = sum(1 for idx in era_groups if int(eras.iloc[idx[0]]) <= 889)
 
     cheap_rows: list[dict] = []
     for weights in weight_grid:
         raw = x @ weights
-        pred = _rank01_per_era(pd.Series(raw), eras).to_numpy(dtype=np.float64)
+        pred = _fast_rank01_per_era(raw, era_groups)
         cheap_score, corr_bench, corr_example, delta_mean = _cheap_prefilter_score(
             pred,
             target=target,

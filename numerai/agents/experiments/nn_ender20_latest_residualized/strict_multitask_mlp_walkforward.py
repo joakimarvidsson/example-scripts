@@ -424,6 +424,30 @@ def _base_specs() -> list[MultitaskSpec]:
         "val_era_fraction": 0.12,
         "clip_grad_norm": 1.0,
     }
+    small_common = {
+        "feature_set": "small+faith2:64",
+        "hidden_layer_sizes": (384, 192, 96),
+        "dropout": 0.05,
+        "learning_rate": 3e-4,
+        "weight_decay": 1e-4,
+        "batch_size": 4096,
+        "max_epochs": 40,
+        "patience": 5,
+        "val_era_fraction": 0.12,
+        "clip_grad_norm": 1.0,
+    }
+    medium_compact = {
+        "feature_set": "medium:128+faith2:64",
+        "hidden_layer_sizes": (512, 256, 128),
+        "dropout": 0.08,
+        "learning_rate": 3e-4,
+        "weight_decay": 1e-4,
+        "batch_size": 4096,
+        "max_epochs": 40,
+        "patience": 5,
+        "val_era_fraction": 0.12,
+        "clip_grad_norm": 1.0,
+    }
     return [
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_mainonly_walkfwd",
@@ -454,6 +478,41 @@ def _base_specs() -> list[MultitaskSpec]:
             aux_target_col="target_teager2b_60",
             aux_weight=0.50,
             **common,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid006_smallfaith64_mainonly_walkfwd",
+            residual_scale=0.006,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **small_common,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid008_smallfaith64_mainonly_walkfwd",
+            residual_scale=0.008,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **small_common,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid006_smallfaith64_auxt60_w025_walkfwd",
+            residual_scale=0.006,
+            aux_target_col="target_teager2b_60",
+            aux_weight=0.25,
+            **small_common,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid006_medcompactfaith64_mainonly_walkfwd",
+            residual_scale=0.006,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **medium_compact,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid008_medcompactfaith64_auxt60_w025_walkfwd",
+            residual_scale=0.008,
+            aux_target_col="target_teager2b_60",
+            aux_weight=0.25,
+            **medium_compact,
         ),
     ]
 
