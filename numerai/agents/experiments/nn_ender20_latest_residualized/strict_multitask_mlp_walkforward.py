@@ -200,6 +200,11 @@ def parse_args() -> argparse.Namespace:
         help="Reuse cached raw walk-forward predictions if present.",
     )
     parser.add_argument(
+        "--skip-strict-score",
+        action="store_true",
+        help="Write raw walk-forward caches only and skip strict scoring.",
+    )
+    parser.add_argument(
         "--best-out-name",
         default="mtmlp_strict_best_ender20_walkfwd",
     )
@@ -752,6 +757,20 @@ def main() -> None:
             raw_pred_df.to_parquet(raw_cache_path, index=False)
             print(f"Saved raw predictions cache: {raw_cache_path}", flush=True)
 
+        if args.skip_strict_score:
+            run_rows.append(
+                {
+                    "model": raw_cache_name,
+                    "feature_set": spec.feature_set,
+                    "aux_target": spec.aux_target_col or "none",
+                    "aux_weight": spec.aux_weight,
+                    "raw_only": True,
+                    "oof_rows": int(raw_pred_df.shape[0]),
+                    "oof_eras": int(raw_pred_df[args.era_col].astype(int).nunique()),
+                }
+            )
+            continue
+
         strict_df, strict_metrics = _select_strict_blend(
             raw_pred_df,
             id_col=args.id_col,
@@ -825,72 +844,82 @@ def main() -> None:
         )
         strict_candidates.append((strict_name, strict_df, strict_metrics))
 
-    summary_df = pd.DataFrame(run_rows).sort_values("strict_score", ascending=False)
+    summary_df = pd.DataFrame(run_rows)
+    if "strict_score" in summary_df.columns:
+        summary_df = summary_df.sort_values("strict_score", ascending=False)
     feasible_count = int(summary_df["feasible"].sum()) if "feasible" in summary_df.columns else 0
-    print("\nTop multitask MLP candidates")
-    print(
-        summary_df[
-            [
-                "model",
-                "aux_target",
-                "aux_weight",
-                "mode",
-                "lambda",
-                "neutralize_bench",
-                "neutralize_example",
-                "feasible",
-                "delta_mean",
-                "early_delta_mean",
-                "delta_roll20_min",
-                "delta_cumsum_end",
-                "delta_cumsum_min",
-                "corr_with_benchmark_max_abs",
-                "corr_with_example_max_abs",
-                "bmc_mean",
-                "payout_mean",
-                "strict_score",
-            ]
-        ].to_string(index=False)
-    )
-    print(f"\nFeasible models: {feasible_count}/{len(summary_df)}", flush=True)
+    if not summary_df.empty and "strict_score" in summary_df.columns:
+        print("\nTop multitask MLP candidates")
+        print(
+            summary_df[
+                [
+                    "model",
+                    "aux_target",
+                    "aux_weight",
+                    "mode",
+                    "lambda",
+                    "neutralize_bench",
+                    "neutralize_example",
+                    "feasible",
+                    "delta_mean",
+                    "early_delta_mean",
+                    "delta_roll20_min",
+                    "delta_cumsum_end",
+                    "delta_cumsum_min",
+                    "corr_with_benchmark_max_abs",
+                    "corr_with_example_max_abs",
+                    "bmc_mean",
+                    "payout_mean",
+                    "strict_score",
+                ]
+            ].to_string(index=False)
+        )
+        print(f"\nFeasible models: {feasible_count}/{len(summary_df)}", flush=True)
+    elif not summary_df.empty:
+        print("\nRaw-only multitask MLP caches")
+        print(summary_df.to_string(index=False), flush=True)
 
-    feasible_df = summary_df[summary_df["feasible"] == True] if "feasible" in summary_df.columns else pd.DataFrame()
-    if not feasible_df.empty:
-        if args.selection_objective == "delta_cumsum_end":
-            best_name = str(feasible_df.sort_values("delta_cumsum_end", ascending=False).iloc[0]["model"])
-        elif args.selection_objective == "corr_sortino_vs_benchmark":
-            best_name = str(feasible_df.sort_values("delta_sortino", ascending=False).iloc[0]["model"])
+    best_name: str | None = None
+    if "strict_score" in summary_df.columns and not summary_df.empty:
+        feasible_df = summary_df[summary_df["feasible"] == True] if "feasible" in summary_df.columns else pd.DataFrame()
+        if not feasible_df.empty:
+            if args.selection_objective == "delta_cumsum_end":
+                best_name = str(feasible_df.sort_values("delta_cumsum_end", ascending=False).iloc[0]["model"])
+            elif args.selection_objective == "corr_sortino_vs_benchmark":
+                best_name = str(feasible_df.sort_values("delta_sortino", ascending=False).iloc[0]["model"])
+            else:
+                best_name = str(feasible_df.sort_values("strict_score", ascending=False).iloc[0]["model"])
         else:
-            best_name = str(feasible_df.sort_values("strict_score", ascending=False).iloc[0]["model"])
-    else:
-        best_name = str(summary_df.iloc[0]["model"])
-    best_df = next(df for name, df, _ in strict_candidates if name == best_name)
-    best_metrics = next(m for name, _, m in strict_candidates if name == best_name)
+            best_name = str(summary_df.iloc[0]["model"])
 
-    best_out_name = args.best_out_name
-    best_out_path = predictions_dir / f"{best_out_name}.parquet"
-    best_df.rename(columns={args.benchmark_model: "benchmark_prediction"}).to_parquet(
-        best_out_path, index=False
-    )
-    _write_result_json(
-        results_dir / f"{best_out_name}.json",
-        {
-            "selection": {
-                "best_base_model": best_name,
-                "selection_objective": args.selection_objective,
-                "required_constraints": {
-                    "max_corr_with_benchmark": args.max_corr_with_benchmark,
-                    "max_corr_with_example": args.max_corr_with_example,
-                    "min_delta_mean": args.min_delta_mean,
-                    "min_delta_cumsum_end": args.min_delta_cumsum_end,
+    if best_name is not None:
+        best_df = next(df for name, df, _ in strict_candidates if name == best_name)
+        best_metrics = next(m for name, _, m in strict_candidates if name == best_name)
+
+        best_out_name = args.best_out_name
+        best_out_path = predictions_dir / f"{best_out_name}.parquet"
+        best_df.rename(columns={args.benchmark_model: "benchmark_prediction"}).to_parquet(
+            best_out_path, index=False
+        )
+        _write_result_json(
+            results_dir / f"{best_out_name}.json",
+            {
+                "selection": {
+                    "best_base_model": best_name,
+                    "selection_objective": args.selection_objective,
+                    "required_constraints": {
+                        "max_corr_with_benchmark": args.max_corr_with_benchmark,
+                        "max_corr_with_example": args.max_corr_with_example,
+                        "min_delta_mean": args.min_delta_mean,
+                        "min_delta_cumsum_end": args.min_delta_cumsum_end,
+                    },
+                },
+                "metrics": best_metrics,
+                "output": {
+                    "predictions_file": str(best_out_path.relative_to(experiment_dir.parent))
                 },
             },
-            "metrics": best_metrics,
-            "output": {
-                "predictions_file": str(best_out_path.relative_to(experiment_dir.parent))
-            },
-        },
-    )
+        )
 
     summary_path = results_dir / args.summary_name
     _write_result_json(

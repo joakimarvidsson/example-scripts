@@ -74,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corr-threshold", type=float, default=0.995)
     parser.add_argument("--benchmark-penalty", type=float, default=5.0)
     parser.add_argument("--example-penalty", type=float, default=2.0)
+    parser.add_argument("--prefilter-top-n", type=int, default=40)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument(
         "--summary-name",
@@ -138,6 +139,59 @@ def _dirichlet_weights(rng: np.random.Generator, n_models: int, n_samples: int) 
                 near_corners[-1][j] = 0.10
     extra = np.vstack([corners, *near_corners]) if near_corners else corners
     return np.vstack([base, extra])
+
+
+def _safe_np_corr(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if a.size == 0 or b.size == 0:
+        return 0.0
+    a = a - a.mean()
+    b = b - b.mean()
+    denom = float(np.sqrt(np.dot(a, a) * np.dot(b, b)))
+    if denom <= 0.0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _build_era_groups(eras: pd.Series) -> list[np.ndarray]:
+    out: list[np.ndarray] = []
+    for _era, idx in eras.groupby(eras, sort=True).groups.items():
+        out.append(np.asarray(idx, dtype=np.int64))
+    return out
+
+
+def _cheap_prefilter_score(
+    pred: np.ndarray,
+    *,
+    target: np.ndarray,
+    benchmark: np.ndarray,
+    example: np.ndarray,
+    era_groups: list[np.ndarray],
+    early_group_count: int,
+    corr_threshold: float,
+    benchmark_penalty: float,
+    example_penalty: float,
+) -> tuple[float, float, float, float]:
+    delta_vals: list[float] = []
+    for idx in era_groups:
+        delta_vals.append(
+            _safe_np_corr(pred[idx], target[idx]) - _safe_np_corr(benchmark[idx], target[idx])
+        )
+    delta = np.asarray(delta_vals, dtype=np.float64)
+    delta_mean = float(delta.mean()) if delta.size else 0.0
+    early_delta_mean = float(delta[:early_group_count].mean()) if early_group_count > 0 else 0.0
+    corr_bench = float(_safe_np_corr(pred, benchmark))
+    corr_example = float(_safe_np_corr(pred, example))
+    bench_excess = max(0.0, corr_bench - float(corr_threshold))
+    ex_excess = max(0.0, corr_example - float(corr_threshold))
+    score = (
+        delta_mean
+        + 0.5 * early_delta_mean
+        - float(benchmark_penalty) * bench_excess
+        - float(example_penalty) * ex_excess
+    )
+    return float(score), corr_bench, corr_example, delta_mean
 
 
 def main() -> None:
@@ -212,10 +266,41 @@ def main() -> None:
     bench_rank = merged["benchmark_rank"].astype(np.float64)
     example_rank = merged["example_rank"].astype(np.float64)
     eras = merged[args.era_col]
+    target = merged[args.target_col].to_numpy(dtype=np.float64)
+    era_groups = _build_era_groups(eras)
+    early_group_count = sum(1 for idx in era_groups if int(eras.iloc[idx[0]]) <= 889)
 
-    for idx, weights in enumerate(weight_grid):
+    cheap_rows: list[dict] = []
+    for weights in weight_grid:
         raw = x @ weights
-        pred = _rank01_per_era(pd.Series(raw), eras)
+        pred = _rank01_per_era(pd.Series(raw), eras).to_numpy(dtype=np.float64)
+        cheap_score, corr_bench, corr_example, delta_mean = _cheap_prefilter_score(
+            pred,
+            target=target,
+            benchmark=bench_rank.to_numpy(dtype=np.float64),
+            example=example_rank.to_numpy(dtype=np.float64),
+            era_groups=era_groups,
+            early_group_count=early_group_count,
+            corr_threshold=float(args.corr_threshold),
+            benchmark_penalty=float(args.benchmark_penalty),
+            example_penalty=float(args.example_penalty),
+        )
+        cheap_rows.append(
+            {
+                "cheap_score": float(cheap_score),
+                "corr_with_benchmark_global": float(corr_bench),
+                "corr_with_example_global": float(corr_example),
+                "cheap_delta_mean": float(delta_mean),
+                "weights": {name: float(w) for name, w in zip(model_names, weights)},
+                "pred": pred,
+            }
+        )
+
+    cheap_rows = sorted(cheap_rows, key=lambda r: float(r["cheap_score"]), reverse=True)
+    candidates = cheap_rows[: max(1, min(int(args.prefilter_top_n), len(cheap_rows)))]
+
+    for row0 in candidates:
+        pred = pd.Series(row0["pred"], index=merged.index, dtype=np.float64)
         corr_bench = float(_safe_corr(pred, bench_rank))
         corr_example = float(_safe_corr(pred, example_rank))
         tmp = merged[[args.id_col, args.era_col, args.target_col, args.benchmark_model]].copy()
@@ -237,10 +322,11 @@ def main() -> None:
             - float(args.example_penalty) * ex_excess
         )
         row = {
+            "cheap_score": float(row0["cheap_score"]),
             "objective": float(objective),
             "corr_with_benchmark_global": corr_bench,
             "corr_with_example_global": corr_example,
-            "weights": {name: float(w) for name, w in zip(model_names, weights)},
+            "weights": row0["weights"],
             **metrics,
         }
         if best_row is None or row["objective"] > best_row["objective"]:
@@ -262,6 +348,7 @@ def main() -> None:
         "settings": {
             "model_pack": model_names,
             "n_samples": int(args.n_samples),
+            "prefilter_top_n": int(args.prefilter_top_n),
             "corr_threshold": float(args.corr_threshold),
             "benchmark_penalty": float(args.benchmark_penalty),
             "example_penalty": float(args.example_penalty),
@@ -270,6 +357,16 @@ def main() -> None:
             "eval_era_count": int(len(eval_eras)),
         },
         "best": best_row,
+        "cheap_prefilter_top": [
+            {
+                "cheap_score": float(r["cheap_score"]),
+                "corr_with_benchmark_global": float(r["corr_with_benchmark_global"]),
+                "corr_with_example_global": float(r["corr_with_example_global"]),
+                "cheap_delta_mean": float(r["cheap_delta_mean"]),
+                "weights": r["weights"],
+            }
+            for r in cheap_rows[: int(args.top_k)]
+        ],
         "top_candidates": top_rows,
         "output": {
             "predictions_file": str(out_path.relative_to(experiment_dir.parent)),
