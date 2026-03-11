@@ -829,7 +829,7 @@ def _parse_feature_specs(value: str) -> list[str]:
         if not spec:
             continue
         if spec.lower() in {"none", "null"}:
-            spec = "none"
+            continue
         if spec not in specs:
             specs.append(spec)
     return specs
