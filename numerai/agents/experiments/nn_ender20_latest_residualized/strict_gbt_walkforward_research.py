@@ -212,6 +212,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-strict-score",
+        action="store_true",
+        help="Write raw walk-forward caches only and skip strict candidate scoring.",
+    )
+    parser.add_argument(
         "--best-out-name",
         default="xgb_strict_best_ender20_walkfwd",
         help="Output stem for the selected best strict model.",
@@ -741,6 +746,20 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         feature_set="medium+faith2:64",
     )
     add_spec(
+        name="xgb_strict_resid008_medfaith64_abs_d5lr3e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**variants[1][1], "objective": "reg:absoluteerror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
+        name="xgb_strict_resid008_medfaith64_phuber_d5lr3e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**variants[1][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
         name="xgb_strict_direct_smallfaith64_full_d5lr3e2_walkfwd",
         residual_scale=0.0,
         offset=None,
@@ -878,6 +897,31 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         model_family="lgbm",
     )
     add_spec(
+        name="lgbm_gbdt_strict_resid008_medfaith64_l1_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={
+            **lgbm_common,
+            "objective": "regression_l1",
+            "boosting_type": "gbdt",
+        },
+        feature_set="medium+faith2:64",
+        model_family="lgbm",
+    )
+    add_spec(
+        name="lgbm_gbdt_strict_resid008_medfaith64_huber_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={
+            **lgbm_common,
+            "objective": "huber",
+            "alpha": 0.75,
+            "boosting_type": "gbdt",
+        },
+        feature_set="medium+faith2:64",
+        model_family="lgbm",
+    )
+    add_spec(
         name="lgbm_dart_strict_resid010_smallfaith64_walkfwd",
         residual_scale=0.010,
         offset=None,
@@ -910,6 +954,22 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         residual_scale=0.008,
         offset=None,
         params=cat_common,
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid008_medfaith64_mae_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**cat_common, "loss_function": "MAE"},
+        feature_set="medium+faith2:64",
+        model_family="catboost",
+    )
+    add_spec(
+        name="cat_strict_resid008_medfaith64_logcosh_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**cat_common, "loss_function": "LogCosh"},
         feature_set="medium+faith2:64",
         model_family="catboost",
     )
@@ -1654,6 +1714,22 @@ def main() -> None:
             raw_pred_df.to_parquet(raw_cache_path, index=False)
             print(f"Saved raw predictions cache: {raw_cache_path}", flush=True)
 
+        if args.skip_strict_score:
+            run_rows.append(
+                {
+                    "model": raw_cache_name,
+                    "model_family": spec.model_family,
+                    "feature_set": spec.feature_set,
+                    "offset": spec.offset if spec.offset is not None else "full",
+                    "residual_scale": spec.residual_scale,
+                    "train_target": train_target_label,
+                    "raw_only": True,
+                    "oof_rows": int(raw_pred_df.shape[0]),
+                    "oof_eras": int(raw_pred_df[args.era_col].astype(str).nunique()),
+                }
+            )
+            continue
+
         strict_df, strict_metrics = _select_strict_blend(
             raw_pred_df,
             id_col=args.id_col,
@@ -1716,6 +1792,38 @@ def main() -> None:
             }
         )
         strict_candidates.append((strict_name, strict_df, strict_metrics))
+
+    if args.skip_strict_score:
+        raw_df = pd.DataFrame(run_rows)
+        print("\nRaw-only strict GBT caches")
+        print(raw_df.to_string(index=False))
+        summary_payload = {
+            "settings": {
+                "min_eval_era": int(args.min_eval_era),
+                "max_eval_era": int(args.max_eval_era),
+                "eval_era_step": int(args.eval_era_step),
+                "early_era_max": int(args.early_era_max),
+                "block_size": int(args.block_size),
+                "max_rows_per_era": int(args.max_rows_per_era),
+                "blend_lambdas": lambdas,
+                "neutralize_benchmark_grid": neutralize_benchmark_grid,
+                "neutralize_example_grid": neutralize_example_grid,
+                "candidate_modes": candidate_modes,
+                "example_preds_path": str(args.example_preds_path),
+                "max_corr_with_benchmark": float(args.max_corr_with_benchmark),
+                "max_corr_with_example": float(args.max_corr_with_example),
+                "min_delta_mean": float(args.min_delta_mean),
+                "min_delta_cumsum_end": float(args.min_delta_cumsum_end),
+                "selection_objective": str(args.selection_objective),
+            },
+            "top_models": raw_df.to_dict(orient="records"),
+            "selected_best_model": None,
+            "feasible_model_count": 0,
+        }
+        summary_path = results_dir / args.summary_name
+        summary_path.write_text(json.dumps(summary_payload, indent=2))
+        print(f"\nSaved summary to {summary_path}", flush=True)
+        return
 
     summary_df = pd.DataFrame(run_rows).sort_values("strict_score", ascending=False)
     feasible_count = int(summary_df["feasible"].sum()) if "feasible" in summary_df.columns else 0
