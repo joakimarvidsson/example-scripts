@@ -121,6 +121,6 @@ Upload state at the end of this round:
 - target slot: `truecontribution`
 - model id: `521734a9-af12-41b4-b511-e7d726878497`
 - uploaded pickle id: `690dcb40-e241-4ef4-b1cf-f8455eab2d6e`
-- Numerai status: `validationStatus = validating`, `triggerStatus = queued`
-
-The upload was started successfully, but Numerai validation had not reached a terminal state by the time this round was checkpointed, so assignment was deferred.
+- Numerai validation result: `validationStatus = validated`
+- Numerai trigger result: `triggerStatus = submission_succeeded`
+- assignment result: pickle assigned successfully to `truecontribution`
