@@ -54,6 +54,34 @@ ERA_PARTITIONS: dict[str, tuple[int, int]] = {
 }
 
 
+def _load_local_env_file(start_dir: Path) -> Path | None:
+    for base in [start_dir, *start_dir.parents]:
+        env_path = base / ".env"
+        if not env_path.exists():
+            continue
+        for raw_line in env_path.read_text(errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+            if (
+                len(value) >= 2
+                and ((value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"'))
+            ):
+                value = value[1:-1]
+            os.environ[key] = value
+        return env_path
+    return None
+
+
 @dataclass(frozen=True)
 class NeuralCvSpec:
     name: str
@@ -1032,7 +1060,9 @@ def _merge_seed_predictions(
 
 
 def _wandb_init(args: argparse.Namespace, summary_settings: dict[str, Any]):
-    if not args.wandb_project.strip() or args.wandb_mode == "disabled":
+    project = args.wandb_project.strip() or os.getenv("WANDB_PROJECT", "").strip()
+    entity = args.wandb_entity.strip() or os.getenv("WANDB_ENTITY", "").strip()
+    if not project or args.wandb_mode == "disabled":
         return None
     try:
         import wandb
@@ -1040,12 +1070,12 @@ def _wandb_init(args: argparse.Namespace, summary_settings: dict[str, Any]):
         print("wandb requested but package is not installed in this environment.", flush=True)
         return None
     init_kwargs: dict[str, Any] = {
-        "project": args.wandb_project.strip(),
+        "project": project,
         "config": summary_settings,
         "mode": args.wandb_mode,
     }
-    if args.wandb_entity.strip():
-        init_kwargs["entity"] = args.wandb_entity.strip()
+    if entity:
+        init_kwargs["entity"] = entity
     if args.wandb_run_group.strip():
         init_kwargs["group"] = args.wandb_run_group.strip()
     tags = [t.strip() for t in args.wandb_tags.split(",") if t.strip()]
@@ -1063,6 +1093,7 @@ def main() -> None:
         )
 
     args = parse_args()
+    loaded_env_path = _load_local_env_file(Path.cwd())
     experiment_dir = args.experiment_dir.resolve()
     predictions_dir = experiment_dir / "predictions"
     results_dir = experiment_dir / "results"
@@ -1131,6 +1162,9 @@ def main() -> None:
         "seed_average_count": args.seed_average_count,
         "seed_stride": args.seed_stride,
         "device": device_name,
+        "loaded_env_path": str(loaded_env_path) if loaded_env_path is not None else None,
+        "effective_wandb_project": args.wandb_project.strip() or os.getenv("WANDB_PROJECT", "").strip(),
+        "effective_wandb_entity": args.wandb_entity.strip() or os.getenv("WANDB_ENTITY", "").strip(),
     }
     wandb_run = _wandb_init(args, summary_settings)
 
@@ -1401,8 +1435,8 @@ def main() -> None:
                 "min_delta_mean": args.min_delta_mean,
                 "min_delta_cumsum_end": args.min_delta_cumsum_end,
                 "selection_objective": args.selection_objective,
-                "wandb_project": args.wandb_project,
-                "wandb_entity": args.wandb_entity,
+                "wandb_project": args.wandb_project.strip() or os.getenv("WANDB_PROJECT", "").strip(),
+                "wandb_entity": args.wandb_entity.strip() or os.getenv("WANDB_ENTITY", "").strip(),
                 "wandb_mode": args.wandb_mode,
             },
             "top_models": summary_df.to_dict(orient="records"),
