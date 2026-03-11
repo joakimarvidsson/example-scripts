@@ -100,6 +100,7 @@ class NeuralCvSpec:
     aux_target_col: str | None = None
     aux_weight: float = 0.0
     era_decay_halflife: float | None = None
+    main_loss: str = "mse"
 
 
 ArrayInput = np.ndarray | tuple[np.ndarray, np.ndarray]
@@ -336,6 +337,7 @@ class _NeuralTorchModel:
         clip_grad_norm: float | None,
         aux_weight: float,
         arch_type: str,
+        main_loss: str,
         device_name: str,
         seed: int,
     ) -> None:
@@ -361,6 +363,7 @@ class _NeuralTorchModel:
         self._clip_grad_norm = clip_grad_norm
         self._aux_weight = float(aux_weight)
         self._arch_type = str(arch_type)
+        self._main_loss = str(main_loss)
         self._device_name = str(device_name)
         self._seed = int(seed)
         self._torch.manual_seed(self._seed)
@@ -496,15 +499,49 @@ class _NeuralTorchModel:
         err = (pred - target) ** 2
         return (err * weight).sum() / weight.sum().clamp(min=1e-8)
 
+    @staticmethod
+    def _pearson_corr(pred, target):
+        pred_centered = pred - pred.mean()
+        target_centered = target - target.mean()
+        denom = (
+            pred_centered.square().mean().clamp(min=1e-8).sqrt()
+            * target_centered.square().mean().clamp(min=1e-8).sqrt()
+        )
+        return (pred_centered * target_centered).mean() / denom
+
+    def _era_corr_loss(self, pred, target, era_ids, era_weights):
+        torch = self._torch
+        losses = []
+        weights = []
+        unique_eras = torch.unique(era_ids)
+        for era in unique_eras:
+            mask = era_ids == era
+            if int(mask.sum().item()) < 3:
+                continue
+            corr = self._pearson_corr(pred[mask], target[mask])
+            losses.append(1.0 - corr)
+            weights.append(era_weights[mask].mean())
+        if not losses:
+            return self._weighted_mse(
+                pred.reshape(-1, 1),
+                target.reshape(-1, 1),
+                era_weights.reshape(-1, 1),
+            )
+        loss_tensor = torch.stack(losses)
+        weight_tensor = torch.stack(weights).clamp(min=1e-8)
+        return (loss_tensor * weight_tensor).sum() / weight_tensor.sum()
+
     def fit(
         self,
         x_train: ArrayInput,
         y_main_train: np.ndarray,
         y_aux_train: np.ndarray | None,
         sample_weight_train: np.ndarray,
+        era_train: np.ndarray,
         x_val: ArrayInput,
         y_main_val: np.ndarray,
         y_aux_val: np.ndarray | None,
+        era_val: np.ndarray,
     ) -> "_NeuralTorchModel":
         torch = self._torch
         optimizer = self._optim.AdamW(
@@ -521,6 +558,9 @@ class _NeuralTorchModel:
             else None
         )
         sample_weight_train_tensor = self._tensor(sample_weight_train.reshape(-1, 1))
+        era_train_tensor = torch.from_numpy(
+            np.ascontiguousarray(era_train.astype(np.int32, copy=False))
+        ).to(device=torch.device(self._device_name))
         x_val_tensor = self._tensor_input(x_val)
         y_main_val_tensor = self._tensor(y_main_val.reshape(-1, 1))
         y_aux_val_tensor = (
@@ -528,6 +568,9 @@ class _NeuralTorchModel:
             if y_aux_val is not None and self._aux_weight > 0.0
             else None
         )
+        era_val_tensor = torch.from_numpy(
+            np.ascontiguousarray(era_val.astype(np.int32, copy=False))
+        ).to(device=torch.device(self._device_name))
 
         n_train = y_main_train_tensor.shape[0]
         indices = np.arange(n_train)
@@ -535,19 +578,42 @@ class _NeuralTorchModel:
         best_val = float("inf")
         best_state = None
         patience_left = self._patience
+        era_batches: list[np.ndarray] | None = None
+        if self._main_loss == "era_corr":
+            era_batches = [
+                np.flatnonzero(era_train == int(era))
+                for era in np.unique(era_train.astype(np.int32, copy=False))
+            ]
+            era_batches = [idx for idx in era_batches if idx.size >= 3]
 
         for _epoch in range(self._max_epochs):
             self._model.train()
-            rng.shuffle(indices)
-            for start in range(0, n_train, self._batch_size):
-                batch_idx = indices[start : start + self._batch_size]
+            if era_batches is not None:
+                rng.shuffle(era_batches)
+                batch_iter = era_batches
+            else:
+                rng.shuffle(indices)
+                batch_iter = [
+                    indices[start : start + self._batch_size]
+                    for start in range(0, n_train, self._batch_size)
+                ]
+            for batch_idx in batch_iter:
                 xb = self._slice_input(x_train_tensor, batch_idx)
                 yb_main = y_main_train_tensor[batch_idx]
                 wb = sample_weight_train_tensor[batch_idx]
+                eb = era_train_tensor[batch_idx]
 
                 optimizer.zero_grad(set_to_none=True)
                 pred_main, pred_aux = self._forward(xb)
-                loss = self._weighted_mse(pred_main, yb_main, wb)
+                if self._main_loss == "era_corr":
+                    loss = self._era_corr_loss(
+                        pred_main.reshape(-1),
+                        yb_main.reshape(-1),
+                        eb.reshape(-1),
+                        wb.reshape(-1),
+                    )
+                else:
+                    loss = self._weighted_mse(pred_main, yb_main, wb)
                 if y_aux_train_tensor is not None:
                     yb_aux = y_aux_train_tensor[batch_idx]
                     loss = loss + self._aux_weight * self._weighted_mse(pred_aux, yb_aux, wb)
@@ -561,11 +627,23 @@ class _NeuralTorchModel:
             self._model.eval()
             with torch.no_grad():
                 pred_main_val, pred_aux_val = self._forward(x_val_tensor)
-                val_loss = float(self._weighted_mse(
-                    pred_main_val,
-                    y_main_val_tensor,
-                    torch.ones_like(y_main_val_tensor),
-                ).item())
+                if self._main_loss == "era_corr":
+                    val_loss = float(
+                        self._era_corr_loss(
+                            pred_main_val.reshape(-1),
+                            y_main_val_tensor.reshape(-1),
+                            era_val_tensor.reshape(-1),
+                            torch.ones_like(y_main_val_tensor).reshape(-1),
+                        ).item()
+                    )
+                else:
+                    val_loss = float(
+                        self._weighted_mse(
+                            pred_main_val,
+                            y_main_val_tensor,
+                            torch.ones_like(y_main_val_tensor),
+                        ).item()
+                    )
                 if y_aux_val_tensor is not None and self._aux_weight > 0.0:
                     val_loss += float(
                         self._aux_weight
@@ -874,6 +952,59 @@ def _initial_specs() -> list[NeuralCvSpec]:
             clip_grad_norm=1.0,
             arch_type="twotower",
             era_decay_halflife=128.0,
+        ),
+        NeuralCvSpec(
+            name="ncv_gated_corr_resid008_medfaith64_nodecay",
+            feature_set="medium:256+faith2:64",
+            residual_scale=0.008,
+            hidden_layer_sizes=(512, 256, 128),
+            dropout=0.10,
+            learning_rate=3.0e-4,
+            weight_decay=1.0e-4,
+            batch_size=4096,
+            max_epochs=24,
+            patience=4,
+            val_era_fraction=0.14,
+            clip_grad_norm=1.0,
+            arch_type="gated",
+            era_decay_halflife=None,
+            main_loss="era_corr",
+        ),
+        NeuralCvSpec(
+            name="ncv_gated_corr_resid010_medfaith64_nodecay",
+            feature_set="medium:256+faith2:64",
+            residual_scale=0.010,
+            hidden_layer_sizes=(512, 256, 128),
+            dropout=0.10,
+            learning_rate=3.0e-4,
+            weight_decay=1.0e-4,
+            batch_size=4096,
+            max_epochs=24,
+            patience=4,
+            val_era_fraction=0.14,
+            clip_grad_norm=1.0,
+            arch_type="gated",
+            era_decay_halflife=None,
+            main_loss="era_corr",
+        ),
+        NeuralCvSpec(
+            name="ncv_gated_corr_resid010_medfaith64_nodecay_auxe60w025",
+            feature_set="medium:256+faith2:64",
+            residual_scale=0.010,
+            hidden_layer_sizes=(512, 256, 128),
+            dropout=0.10,
+            learning_rate=3.0e-4,
+            weight_decay=1.0e-4,
+            batch_size=4096,
+            max_epochs=24,
+            patience=4,
+            val_era_fraction=0.14,
+            clip_grad_norm=1.0,
+            arch_type="gated",
+            aux_target_col="target_ender_60",
+            aux_weight=0.25,
+            era_decay_halflife=None,
+            main_loss="era_corr",
         ),
     ]
 
@@ -1200,6 +1331,7 @@ def _train_walkforward_model(
             clip_grad_norm=spec.clip_grad_norm,
             aux_weight=spec.aux_weight,
             arch_type=spec.arch_type,
+            main_loss=spec.main_loss,
             device_name=device_name,
             seed=run_seed,
         )
@@ -1208,9 +1340,11 @@ def _train_walkforward_model(
             y_main_fit,
             y_aux_fit,
             sample_weight_fit,
+            fit_df[era_col].astype(int).to_numpy(dtype=np.int32, copy=False),
             x_internal_val,
             y_main_internal_val,
             y_aux_internal_val,
+            internal_val_df[era_col].astype(int).to_numpy(dtype=np.int32, copy=False),
         )
         pred = model.predict_main(x_block_val)
 
