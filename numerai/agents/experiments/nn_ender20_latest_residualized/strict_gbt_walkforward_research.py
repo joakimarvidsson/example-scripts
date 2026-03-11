@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.kernel_approximation import RBFSampler
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
@@ -594,6 +595,26 @@ def _prepare_features(
         n_components = max(1, min(int(n_components), train_scaled.shape[1]))
         pca = PCA(n_components=n_components, svd_solver="randomized", random_state=seed)
         return pca.fit_transform(train_scaled), pca.transform(val_scaled)
+    if transform.startswith("rff"):
+        body = transform[3:]
+        if "_" in body:
+            ncomp_str, gamma_str = body.split("_", 1)
+            gamma = float(gamma_str)
+        else:
+            ncomp_str = body
+            gamma = 1.0 / max(train_x.shape[1], 1)
+        n_components = max(8, int(ncomp_str))
+        scaler = StandardScaler()
+        train_scaled = scaler.fit_transform(train_x)
+        val_scaled = scaler.transform(val_x)
+        rff = RBFSampler(
+            gamma=float(gamma),
+            n_components=n_components,
+            random_state=seed,
+        )
+        train_rff = rff.fit_transform(train_scaled).astype(np.float32, copy=False)
+        val_rff = rff.transform(val_scaled).astype(np.float32, copy=False)
+        return train_rff, val_rff
     raise ValueError(f"Unsupported _feature_transform: {transform}")
 
 
@@ -1136,6 +1157,38 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         offset=None,
         params={**ridge_common, "alpha": 10.0, "_feature_transform": "pca96"},
         feature_set="small+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_medfaith64_a1_rff128_g0p5_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 1.0, "_feature_transform": "rff128_0.5"},
+        feature_set="medium+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_medfaith64_a10_rff128_g0p5_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "rff128_0.5"},
+        feature_set="medium+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_medfaith64_a1_rff256_g1p0_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 1.0, "_feature_transform": "rff256_1.0"},
+        feature_set="medium+faith2:64",
+        model_family="ridge",
+    )
+    add_spec(
+        name="ridge_strict_resid008_medfaith64_a10_rff256_g1p0_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**ridge_common, "alpha": 10.0, "_feature_transform": "rff256_1.0"},
+        feature_set="medium+faith2:64",
         model_family="ridge",
     )
     return specs
