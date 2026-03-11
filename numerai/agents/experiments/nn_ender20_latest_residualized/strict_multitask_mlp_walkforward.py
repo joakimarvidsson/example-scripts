@@ -286,6 +286,9 @@ class _MultitaskTorchModel:
         self._arch_type = str(arch_type)
         self._device_name = str(device_name)
         self._seed = int(seed)
+        self._torch.manual_seed(self._seed)
+        if self._torch.backends.mps.is_available():
+            self._torch.mps.manual_seed(self._seed)
         self._model = self._build_network()
 
     def _tensor(self, values: np.ndarray):
@@ -458,6 +461,9 @@ def _base_specs() -> list[MultitaskSpec]:
         "clip_grad_norm": 1.0,
     }
     common_no_resid = {k: v for k, v in common.items() if k != "residual_scale"}
+    common_no_resid_or_feat = {
+        k: v for k, v in common.items() if k not in {"residual_scale", "feature_set"}
+    }
     small_common = {
         "feature_set": "small+faith2:64",
         "hidden_layer_sizes": (384, 192, 96),
@@ -554,6 +560,87 @@ def _base_specs() -> list[MultitaskSpec]:
             aux_target_col=None,
             aux_weight=0.0,
             **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medium256only_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium:256",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_faith128only_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="faith2:128",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_faith192only_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="faith2:192",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medium128faith128_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium:128+faith2:128",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medmask40a_faith64_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium_mask40a+faith2:64",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medmask40b_faith64_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium_mask40b+faith2:64",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medmask60a_faith64_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium_mask60a+faith2:64",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medmask60b_faith64_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium_mask60b+faith2:64",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
+        ),
+        MultitaskSpec(
+            name="mtmlp_strict_resid010_medmask20a_faith192_mainonly_walkfwd",
+            main_target_mix=None,
+            feature_set="medium_mask20a+faith2:192",
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **common_no_resid_or_feat,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid011_medfaith64_mainonly_walkfwd",
@@ -728,6 +815,29 @@ def _mixed_residual_target(
             scale=residual_scale,
         ).astype(np.float64, copy=False)
     return mixed.astype(np.float32, copy=False)
+
+
+def _build_custom_feature_subspaces(
+    feature_sets: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    medium_cols = list(feature_sets["medium"])
+
+    def sample_medium(name: str, frac: float, seed: int) -> tuple[str, list[str]]:
+        rng = np.random.default_rng(seed)
+        size = max(1, int(round(len(medium_cols) * float(frac))))
+        idx = np.sort(rng.choice(len(medium_cols), size=size, replace=False))
+        cols = [medium_cols[int(i)] for i in idx]
+        return name, cols
+
+    return dict(
+        [
+            sample_medium("medium_mask20a", 0.20, 20260321),
+            sample_medium("medium_mask40a", 0.40, 20260341),
+            sample_medium("medium_mask40b", 0.40, 20260342),
+            sample_medium("medium_mask60a", 0.60, 20260361),
+            sample_medium("medium_mask60b", 0.60, 20260362),
+        ]
+    )
 
 
 def _train_walkforward_model(
@@ -917,6 +1027,7 @@ def main() -> None:
     print(f"Using torch device: {device_name}", flush=True)
 
     feature_sets = _load_feature_sets(_resolve_features_json())
+    feature_sets.update(_build_custom_feature_subspaces(feature_sets))
     full_data_path = _resolve_input_path(args.full_data_path)
     benchmark_data_path = _resolve_input_path(args.benchmark_data_path)
     example_preds_path = _resolve_input_path(args.example_preds_path)
