@@ -58,6 +58,11 @@ MODEL_PATHS = {
         "/Users/joakim/Documents/Projects/Numerai/example-scripts-codex-faith-scale/numerai/agents/experiments/"
         "nn_ender20_latest_residualized/predictions/optuna_lgbm_shallow_highlr_best_confirm.parquet"
     ),
+    "mlp_resid010_dense_seedavg3": Path(
+        "/Users/joakim/Documents/Projects/Numerai/example-scripts/numerai/agents/experiments/"
+        "nn_ender20_latest_residualized/predictions/mtmlp_strict_resid010_medfaith64_mainonly_walkfwd_"
+        "raw_walkfwd_roundS44dense_seedavg3.parquet"
+    ),
 }
 
 
@@ -110,6 +115,11 @@ def parse_args() -> argparse.Namespace:
         "--candidate-modes",
         default="blend,blend_neutralize",
     )
+    parser.add_argument(
+        "--spec-names",
+        default="",
+        help="Optional comma-separated stack spec names to run.",
+    )
     parser.add_argument("--summary-name", default="walkforward_prediction_stacker_summary.json")
     parser.add_argument("--round-note-name", default="roundS34_prediction_stacker.md")
     return parser.parse_args()
@@ -117,10 +127,11 @@ def parse_args() -> argparse.Namespace:
 
 def _load_prediction_column(path: Path, name: str, *, id_col: str, era_col: str, min_eval_era: int) -> pd.DataFrame:
     df = pd.read_parquet(path)
-    if "prediction" not in df.columns:
-        raise ValueError(f"{path} missing prediction column")
-    cols = [id_col, era_col, "prediction"]
-    out = df[cols].copy().rename(columns={"prediction": name})
+    pred_col = "prediction" if "prediction" in df.columns else "prediction_raw" if "prediction_raw" in df.columns else None
+    if pred_col is None:
+        raise ValueError(f"{path} missing prediction or prediction_raw column")
+    cols = [id_col, era_col, pred_col]
+    out = df[cols].copy().rename(columns={pred_col: name})
     out = out[out[era_col].astype(int) >= int(min_eval_era)].copy()
     return out
 
@@ -223,6 +234,36 @@ def _build_stack_specs() -> list[StackSpec]:
             alpha=0.0,
             positive=True,
             base_models=("cat_dense", "xgb_hist", "ridge_smallfaith", "mlp_roundM6"),
+            residual_scale=0.0,
+        ),
+        StackSpec(
+            name="stack_poslin_cat_dense_resid010seedavg3_mlp_raw",
+            model_kind="linear",
+            feature_mode="raw_ranks",
+            target_mode="raw",
+            alpha=0.0,
+            positive=True,
+            base_models=("cat_dense", "mlp_resid010_dense_seedavg3", "mlp_roundM6"),
+            residual_scale=0.0,
+        ),
+        StackSpec(
+            name="stack_ridge_cat_dense_resid010seedavg3_mlp_r006_a1",
+            model_kind="ridge",
+            feature_mode="raw_ranks",
+            target_mode="residualized",
+            alpha=1.0,
+            positive=False,
+            base_models=("cat_dense", "mlp_resid010_dense_seedavg3", "mlp_roundM6"),
+            residual_scale=0.006,
+        ),
+        StackSpec(
+            name="stack_poslin_cat_dense_resid010seedavg3_raw",
+            model_kind="linear",
+            feature_mode="raw_ranks",
+            target_mode="raw",
+            alpha=0.0,
+            positive=True,
+            base_models=("cat_dense", "mlp_resid010_dense_seedavg3"),
             residual_scale=0.0,
         ),
     ]
@@ -372,7 +413,14 @@ def main() -> None:
         "",
     ]
 
-    for spec in _build_stack_specs():
+    specs = _build_stack_specs()
+    if args.spec_names.strip():
+        wanted = {name.strip() for name in args.spec_names.split(",") if name.strip()}
+        specs = [spec for spec in specs if spec.name in wanted]
+        if not specs:
+            raise ValueError(f"No matching --spec-names found: {sorted(wanted)}")
+
+    for spec in specs:
         merged = base.copy()
         for model_name in spec.base_models:
             merged = merged.merge(

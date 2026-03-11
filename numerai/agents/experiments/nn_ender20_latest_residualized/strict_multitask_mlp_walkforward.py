@@ -63,6 +63,7 @@ class MultitaskSpec:
     patience: int
     val_era_fraction: float
     clip_grad_norm: float | None
+    arch_type: str = "plain"
 
 
 def parse_args() -> argparse.Namespace:
@@ -257,6 +258,7 @@ class _MultitaskTorchModel:
         patience: int,
         clip_grad_norm: float | None,
         aux_weight: float,
+        arch_type: str,
         device_name: str,
         seed: int,
     ) -> None:
@@ -281,6 +283,7 @@ class _MultitaskTorchModel:
         self._patience = int(patience)
         self._clip_grad_norm = clip_grad_norm
         self._aux_weight = float(aux_weight)
+        self._arch_type = str(arch_type)
         self._device_name = str(device_name)
         self._seed = int(seed)
         self._model = self._build_network()
@@ -295,15 +298,44 @@ class _MultitaskTorchModel:
         torch = self._torch
         nn = self._nn
 
-        layers: list = []
-        in_dim = self._input_dim
-        for hidden_dim in self._hidden_layer_sizes:
-            layers.append(nn.Linear(in_dim, hidden_dim))
-            layers.append(nn.GELU())
-            if self._dropout > 0.0:
-                layers.append(nn.Dropout(self._dropout))
-            in_dim = hidden_dim
-        trunk = nn.Sequential(*layers)
+        if self._arch_type == "plain":
+            layers: list = []
+            in_dim = self._input_dim
+            for hidden_dim in self._hidden_layer_sizes:
+                layers.append(nn.Linear(in_dim, hidden_dim))
+                layers.append(nn.GELU())
+                if self._dropout > 0.0:
+                    layers.append(nn.Dropout(self._dropout))
+                in_dim = hidden_dim
+            trunk = nn.Sequential(*layers)
+        elif self._arch_type == "resnet":
+            class ResidualBlock(nn.Module):
+                def __init__(self, in_dim: int, out_dim: int, dropout: float):
+                    super().__init__()
+                    self.fc1 = nn.Linear(in_dim, out_dim)
+                    self.fc2 = nn.Linear(out_dim, out_dim)
+                    self.skip = nn.Identity() if in_dim == out_dim else nn.Linear(in_dim, out_dim, bias=False)
+                    self.norm = nn.LayerNorm(out_dim)
+                    self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+
+                def forward(self, x):
+                    h = self.fc1(x)
+                    h = nn.functional.gelu(h)
+                    h = self.dropout(h)
+                    h = self.fc2(h)
+                    h = self.skip(x) + h
+                    h = self.norm(h)
+                    h = nn.functional.gelu(h)
+                    return self.dropout(h)
+
+            blocks: list = []
+            in_dim = self._input_dim
+            for hidden_dim in self._hidden_layer_sizes:
+                blocks.append(ResidualBlock(in_dim, hidden_dim, self._dropout))
+                in_dim = hidden_dim
+            trunk = nn.Sequential(*blocks)
+        else:
+            raise ValueError(f"Unsupported arch_type: {self._arch_type}")
 
         class Net(nn.Module):
             def __init__(self, trunk_module, trunk_dim: int):
@@ -450,6 +482,19 @@ def _base_specs() -> list[MultitaskSpec]:
         "val_era_fraction": 0.12,
         "clip_grad_norm": 1.0,
     }
+    res_common = {
+        "feature_set": "medium:256+faith2:64",
+        "hidden_layer_sizes": (512, 512, 512),
+        "dropout": 0.10,
+        "learning_rate": 2.5e-4,
+        "weight_decay": 1e-4,
+        "batch_size": 4096,
+        "max_epochs": 50,
+        "patience": 6,
+        "val_era_fraction": 0.12,
+        "clip_grad_norm": 1.0,
+        "arch_type": "resnet",
+    }
     return [
         MultitaskSpec(
             name="mtmlp_strict_resid008_medfaith64_mainonly_walkfwd",
@@ -549,6 +594,22 @@ def _base_specs() -> list[MultitaskSpec]:
             aux_target_col=None,
             aux_weight=0.0,
             **common_no_resid,
+        ),
+        MultitaskSpec(
+            name="resmlp_strict_resid010_medfaith64_mainonly_walkfwd",
+            main_target_mix=None,
+            residual_scale=0.010,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **res_common,
+        ),
+        MultitaskSpec(
+            name="resmlp_strict_resid011_medfaith64_mainonly_walkfwd",
+            main_target_mix=None,
+            residual_scale=0.011,
+            aux_target_col=None,
+            aux_weight=0.0,
+            **res_common,
         ),
         MultitaskSpec(
             name="mtmlp_strict_resid006_smallfaith64_mainonly_walkfwd",
@@ -807,6 +868,7 @@ def _train_walkforward_model(
             patience=spec.patience,
             clip_grad_norm=spec.clip_grad_norm,
             aux_weight=spec.aux_weight,
+            arch_type=spec.arch_type,
             device_name=device_name,
             seed=seed + block_idx,
         )
@@ -940,6 +1002,7 @@ def main() -> None:
                 {
                     "model": raw_cache_name,
                     "feature_set": spec.feature_set,
+                    "arch_type": spec.arch_type,
                     "main_target_mix": (
                         ",".join(f"{col}:{weight:g}" for col, weight in spec.main_target_mix)
                         if spec.main_target_mix
@@ -983,6 +1046,7 @@ def main() -> None:
                 "data_version": "v5.2",
                 "feature_set": spec.feature_set,
                 "target": args.target_col,
+                "arch_type": spec.arch_type,
                 "main_target_mix": (
                     [[col, float(weight)] for col, weight in spec.main_target_mix]
                     if spec.main_target_mix
@@ -1011,6 +1075,7 @@ def main() -> None:
                 ),
                 "aux_target": spec.aux_target_col,
                 "aux_weight": spec.aux_weight,
+                "arch_type": spec.arch_type,
                 "residual_scale": spec.residual_scale,
                 "hidden_layer_sizes": list(spec.hidden_layer_sizes),
                 "dropout": spec.dropout,
@@ -1030,6 +1095,7 @@ def main() -> None:
             {
                 "model": strict_name,
                 "feature_set": spec.feature_set,
+                "arch_type": spec.arch_type,
                 "main_target_mix": (
                     ",".join(f"{col}:{weight:g}" for col, weight in spec.main_target_mix)
                     if spec.main_target_mix
