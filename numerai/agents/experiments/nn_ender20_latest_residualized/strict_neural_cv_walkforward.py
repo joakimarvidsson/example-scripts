@@ -101,6 +101,7 @@ class NeuralCvSpec:
     aux_weight: float = 0.0
     era_decay_halflife: float | None = None
     main_loss: str = "mse"
+    benchmark_combine_scale: float = 0.0
 
 
 ArrayInput = np.ndarray | tuple[np.ndarray, np.ndarray]
@@ -338,6 +339,7 @@ class _NeuralTorchModel:
         aux_weight: float,
         arch_type: str,
         main_loss: str,
+        benchmark_combine_scale: float,
         device_name: str,
         seed: int,
     ) -> None:
@@ -364,6 +366,7 @@ class _NeuralTorchModel:
         self._aux_weight = float(aux_weight)
         self._arch_type = str(arch_type)
         self._main_loss = str(main_loss)
+        self._benchmark_combine_scale = float(benchmark_combine_scale)
         self._device_name = str(device_name)
         self._seed = int(seed)
         self._torch.manual_seed(self._seed)
@@ -531,6 +534,11 @@ class _NeuralTorchModel:
         weight_tensor = torch.stack(weights).clamp(min=1e-8)
         return (loss_tensor * weight_tensor).sum() / weight_tensor.sum()
 
+    def _combine_with_benchmark(self, pred, benchmark):
+        if self._benchmark_combine_scale <= 0.0 or benchmark is None:
+            return pred
+        return benchmark + self._benchmark_combine_scale * self._torch.tanh(pred)
+
     def fit(
         self,
         x_train: ArrayInput,
@@ -538,10 +546,12 @@ class _NeuralTorchModel:
         y_aux_train: np.ndarray | None,
         sample_weight_train: np.ndarray,
         era_train: np.ndarray,
+        benchmark_train: np.ndarray | None,
         x_val: ArrayInput,
         y_main_val: np.ndarray,
         y_aux_val: np.ndarray | None,
         era_val: np.ndarray,
+        benchmark_val: np.ndarray | None,
     ) -> "_NeuralTorchModel":
         torch = self._torch
         optimizer = self._optim.AdamW(
@@ -561,6 +571,9 @@ class _NeuralTorchModel:
         era_train_tensor = torch.from_numpy(
             np.ascontiguousarray(era_train.astype(np.int32, copy=False))
         ).to(device=torch.device(self._device_name))
+        benchmark_train_tensor = (
+            self._tensor(benchmark_train.reshape(-1, 1)) if benchmark_train is not None else None
+        )
         x_val_tensor = self._tensor_input(x_val)
         y_main_val_tensor = self._tensor(y_main_val.reshape(-1, 1))
         y_aux_val_tensor = (
@@ -571,6 +584,9 @@ class _NeuralTorchModel:
         era_val_tensor = torch.from_numpy(
             np.ascontiguousarray(era_val.astype(np.int32, copy=False))
         ).to(device=torch.device(self._device_name))
+        benchmark_val_tensor = (
+            self._tensor(benchmark_val.reshape(-1, 1)) if benchmark_val is not None else None
+        )
 
         n_train = y_main_train_tensor.shape[0]
         indices = np.arange(n_train)
@@ -602,18 +618,20 @@ class _NeuralTorchModel:
                 yb_main = y_main_train_tensor[batch_idx]
                 wb = sample_weight_train_tensor[batch_idx]
                 eb = era_train_tensor[batch_idx]
+                bb = benchmark_train_tensor[batch_idx] if benchmark_train_tensor is not None else None
 
                 optimizer.zero_grad(set_to_none=True)
                 pred_main, pred_aux = self._forward(xb)
+                pred_main_eval = self._combine_with_benchmark(pred_main, bb)
                 if self._main_loss == "era_corr":
                     loss = self._era_corr_loss(
-                        pred_main.reshape(-1),
+                        pred_main_eval.reshape(-1),
                         yb_main.reshape(-1),
                         eb.reshape(-1),
                         wb.reshape(-1),
                     )
                 else:
-                    loss = self._weighted_mse(pred_main, yb_main, wb)
+                    loss = self._weighted_mse(pred_main_eval, yb_main, wb)
                 if y_aux_train_tensor is not None:
                     yb_aux = y_aux_train_tensor[batch_idx]
                     loss = loss + self._aux_weight * self._weighted_mse(pred_aux, yb_aux, wb)
@@ -627,10 +645,11 @@ class _NeuralTorchModel:
             self._model.eval()
             with torch.no_grad():
                 pred_main_val, pred_aux_val = self._forward(x_val_tensor)
+                pred_main_val_eval = self._combine_with_benchmark(pred_main_val, benchmark_val_tensor)
                 if self._main_loss == "era_corr":
                     val_loss = float(
                         self._era_corr_loss(
-                            pred_main_val.reshape(-1),
+                            pred_main_val_eval.reshape(-1),
                             y_main_val_tensor.reshape(-1),
                             era_val_tensor.reshape(-1),
                             torch.ones_like(y_main_val_tensor).reshape(-1),
@@ -639,7 +658,7 @@ class _NeuralTorchModel:
                 else:
                     val_loss = float(
                         self._weighted_mse(
-                            pred_main_val,
+                            pred_main_val_eval,
                             y_main_val_tensor,
                             torch.ones_like(y_main_val_tensor),
                         ).item()
@@ -670,16 +689,26 @@ class _NeuralTorchModel:
             self._model.load_state_dict(best_state)
         return self
 
-    def predict_main(self, x: ArrayInput, batch_size: int = 8192) -> np.ndarray:
+    def predict_main(
+        self,
+        x: ArrayInput,
+        benchmark: np.ndarray | None = None,
+        batch_size: int = 8192,
+    ) -> np.ndarray:
         self._model.eval()
         n_rows = x[0].shape[0] if isinstance(x, tuple) else x.shape[0]
         preds = np.empty(n_rows, dtype=np.float32)
         x_tensor = self._tensor_input(x)
+        benchmark_tensor = (
+            self._tensor(benchmark.reshape(-1, 1)) if benchmark is not None else None
+        )
         with self._torch.no_grad():
             for start in range(0, n_rows, batch_size):
                 end = start + batch_size
                 xb = self._slice_input(x_tensor, slice(start, end))
                 pred_main, _pred_aux = self._forward(xb)
+                bb = benchmark_tensor[start:end] if benchmark_tensor is not None else None
+                pred_main = self._combine_with_benchmark(pred_main, bb)
                 preds[start:end] = (
                     pred_main.detach().cpu().numpy().reshape(-1).astype(np.float32)
                 )
@@ -1006,6 +1035,42 @@ def _initial_specs() -> list[NeuralCvSpec]:
             era_decay_halflife=None,
             main_loss="era_corr",
         ),
+        NeuralCvSpec(
+            name="ncv_gated_corr_benchs05_medfaith64",
+            feature_set="medium:256+faith2:64",
+            residual_scale=0.0,
+            hidden_layer_sizes=(512, 256, 128),
+            dropout=0.10,
+            learning_rate=3.0e-4,
+            weight_decay=1.0e-4,
+            batch_size=4096,
+            max_epochs=24,
+            patience=4,
+            val_era_fraction=0.14,
+            clip_grad_norm=1.0,
+            arch_type="gated",
+            era_decay_halflife=None,
+            main_loss="era_corr",
+            benchmark_combine_scale=0.05,
+        ),
+        NeuralCvSpec(
+            name="ncv_gated_corr_benchs10_medfaith64",
+            feature_set="medium:256+faith2:64",
+            residual_scale=0.0,
+            hidden_layer_sizes=(512, 256, 128),
+            dropout=0.10,
+            learning_rate=3.0e-4,
+            weight_decay=1.0e-4,
+            batch_size=4096,
+            max_epochs=24,
+            patience=4,
+            val_era_fraction=0.14,
+            clip_grad_norm=1.0,
+            arch_type="gated",
+            era_decay_halflife=None,
+            main_loss="era_corr",
+            benchmark_combine_scale=0.10,
+        ),
     ]
 
 
@@ -1278,18 +1343,22 @@ def _train_walkforward_model(
             arch_type=spec.arch_type,
         )
 
-        y_main_fit = _residualize_target(
-            fit_df[target_col],
-            fit_df[benchmark_model],
-            fit_df[era_col],
-            scale=spec.residual_scale,
-        )
-        y_main_internal_val = _residualize_target(
-            internal_val_df[target_col],
-            internal_val_df[benchmark_model],
-            internal_val_df[era_col],
-            scale=spec.residual_scale,
-        )
+        if spec.benchmark_combine_scale > 0.0:
+            y_main_fit = fit_df[target_col].to_numpy(dtype=np.float32, copy=False)
+            y_main_internal_val = internal_val_df[target_col].to_numpy(dtype=np.float32, copy=False)
+        else:
+            y_main_fit = _residualize_target(
+                fit_df[target_col],
+                fit_df[benchmark_model],
+                fit_df[era_col],
+                scale=spec.residual_scale,
+            )
+            y_main_internal_val = _residualize_target(
+                internal_val_df[target_col],
+                internal_val_df[benchmark_model],
+                internal_val_df[era_col],
+                scale=spec.residual_scale,
+            )
 
         y_aux_fit: np.ndarray | None = None
         y_aux_internal_val: np.ndarray | None = None
@@ -1332,6 +1401,7 @@ def _train_walkforward_model(
             aux_weight=spec.aux_weight,
             arch_type=spec.arch_type,
             main_loss=spec.main_loss,
+            benchmark_combine_scale=spec.benchmark_combine_scale,
             device_name=device_name,
             seed=run_seed,
         )
@@ -1341,12 +1411,29 @@ def _train_walkforward_model(
             y_aux_fit,
             sample_weight_fit,
             fit_df[era_col].astype(int).to_numpy(dtype=np.int32, copy=False),
+            (
+                fit_df[benchmark_model].to_numpy(dtype=np.float32, copy=False)
+                if spec.benchmark_combine_scale > 0.0
+                else None
+            ),
             x_internal_val,
             y_main_internal_val,
             y_aux_internal_val,
             internal_val_df[era_col].astype(int).to_numpy(dtype=np.int32, copy=False),
+            (
+                internal_val_df[benchmark_model].to_numpy(dtype=np.float32, copy=False)
+                if spec.benchmark_combine_scale > 0.0
+                else None
+            ),
         )
-        pred = model.predict_main(x_block_val)
+        pred = model.predict_main(
+            x_block_val,
+            benchmark=(
+                val_df[benchmark_model].to_numpy(dtype=np.float32, copy=False)
+                if spec.benchmark_combine_scale > 0.0
+                else None
+            ),
+        )
 
         out = val_df[[id_col, era_col, target_col, benchmark_model]].copy()
         out[era_col] = out[era_col].astype(str)
