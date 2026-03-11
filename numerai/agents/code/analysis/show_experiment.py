@@ -275,6 +275,15 @@ def _metrics_from_predictions(
     )
 
     row = {"model": name, "feature_set": None}
+    if benchmark_col in df.columns:
+        diff = (df[pred_col] - df[benchmark_col]).abs()
+        row["benchmark_fallback"] = bool(float(diff.max()) == 0.0)
+        row["benchmark_diff_mean_abs"] = float(diff.mean())
+        row["benchmark_diff_max_abs"] = float(diff.max())
+    else:
+        row["benchmark_fallback"] = False
+        row["benchmark_diff_mean_abs"] = np.nan
+        row["benchmark_diff_max_abs"] = np.nan
     row.update(_summary_row(bmc_summary, "bmc"))
     row["bmc_avg_corr_bench"] = benchmark_corr_mean
     row.update(_summary_row(bmc_last, "bmc_last200"))
@@ -343,6 +352,7 @@ def _plot_curves(
     base_cumsum: pd.Series,
     model_cumsums: dict[str, pd.Series],
     bmc_cumsums: dict[str, pd.Series],
+    fallback_models: set[str],
     output_dir: Path,
     dark_mode: bool = False,
     max_xticks: int | None = None,
@@ -369,10 +379,11 @@ def _plot_curves(
         alpha=base_alpha,
     )
     for name, series in model_cumsums.items():
+        label = f"{name} [benchmark fallback]" if name in fallback_models else name
         axes[0].plot(
             series.index,
             series.values,
-            label=name,
+            label=label,
             linewidth=2 if name in model_colors else 1.5,
             color=model_colors.get(name),
             alpha=0.9 if dark_mode else 0.8,
@@ -385,10 +396,15 @@ def _plot_curves(
     for name, series in model_cumsums.items():
         common = base_cumsum.index.intersection(series.index)
         delta = series.loc[common] - base_cumsum.loc[common]
+        label = (
+            f"{name} - {base_name} [benchmark fallback]"
+            if name in fallback_models
+            else f"{name} - {base_name}"
+        )
         axes[1].plot(
             delta.index,
             delta.values,
-            label=f"{name} - {base_name}",
+            label=label,
             linewidth=2 if name in model_colors else 1.5,
             color=model_colors.get(name),
             alpha=0.9 if dark_mode else 0.8,
@@ -411,10 +427,11 @@ def _plot_curves(
         for name, series in bmc_cumsums.items():
             if name == base_name:
                 continue
+            label = f"{name} [benchmark fallback]" if name in fallback_models else name
             axes[2].plot(
                 series.index,
                 series.values,
-                label=name,
+                label=label,
                 linewidth=2 if name in model_colors else 1.5,
                 color=model_colors.get(name),
                 alpha=0.9 if dark_mode else 0.8,
@@ -558,6 +575,14 @@ def main() -> None:
     metrics_df = pd.DataFrame(metrics_rows)
     print("Model metrics:")
     print(_format_table(metrics_df))
+    if "benchmark_fallback" in metrics_df.columns:
+        fallback_rows = metrics_df.loc[
+            metrics_df["benchmark_fallback"] == True, "model"
+        ].tolist()
+        if fallback_rows:
+            print("\nBenchmark fallback selected for:")
+            for name in fallback_rows:
+                print(f"  - {name}")
 
     base_corr = _per_era_corr(base_df, args.pred_col, args.target_col, args.era_col)
     base_corr = _filter_by_start_era(base_corr, args.start_era)
@@ -627,7 +652,14 @@ def main() -> None:
         base_cumsum,
         model_cumsums,
         bmc_cumsums,
-        output_dir,
+        fallback_models=set(
+            metrics_df.loc[
+                metrics_df["benchmark_fallback"] == True, "model"
+            ].tolist()
+        )
+        if "benchmark_fallback" in metrics_df.columns
+        else set(),
+        output_dir=output_dir,
         dark_mode=args.dark,
         max_xticks=args.max_xticks,
     )
