@@ -760,6 +760,41 @@ def _base_model_specs(seed: int) -> list[ModelSpec]:
         feature_set="medium+faith2:64",
     )
     add_spec(
+        name="xgb_strict_resid006_medfaith64_phuber_d5lr3e2_walkfwd",
+        residual_scale=0.006,
+        offset=None,
+        params={**variants[1][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
+        name="xgb_strict_resid010_medfaith64_phuber_d5lr3e2_walkfwd",
+        residual_scale=0.010,
+        offset=None,
+        params={**variants[1][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
+        name="xgb_strict_resid008_medfaith64_phuber_d4lr5e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**variants[0][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
+        name="xgb_strict_resid008_medfaith64_phuber_d3lr7e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**variants[2][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
+        name="xgb_strict_resid008_medfaith64_phuber_d6lr2e2_walkfwd",
+        residual_scale=0.008,
+        offset=None,
+        params={**variants[3][1], "objective": "reg:pseudohubererror"},
+        feature_set="medium+faith2:64",
+    )
+    add_spec(
         name="xgb_strict_direct_smallfaith64_full_d5lr3e2_walkfwd",
         residual_scale=0.0,
         offset=None,
